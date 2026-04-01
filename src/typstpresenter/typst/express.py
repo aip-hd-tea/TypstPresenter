@@ -35,6 +35,8 @@ def _express_element(element: Element | str) -> str:
             return "".join(_express_element(x) for x in value)
         case Title(text):
             return _express_element(text)
+        case None:
+            return ""
         case _:
             return str(element)
 
