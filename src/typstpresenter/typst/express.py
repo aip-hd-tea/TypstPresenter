@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from typstpresenter.model.Element import Element
+from typstpresenter.model.List import List
 from typstpresenter.model.Title import Title
 from typstpresenter.model.text.Link import Link
 from typstpresenter.model.text.Text import Text
@@ -33,6 +34,9 @@ def _express_element(element: Element | str) -> str:
             return f'#link("{target}")[{_express_element(text)}]'
         case Text(value):
             return "".join(_express_element(x) for x in value)
+        case List(items):
+            # TODO Handle nested lists
+            return "\n".join(f"- {_express_element(item)}" for item in items)
         case Title(text):
             return _express_element(text)
         case None:

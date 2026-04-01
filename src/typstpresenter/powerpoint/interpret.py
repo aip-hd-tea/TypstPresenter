@@ -5,6 +5,7 @@ from pptx.shapes.placeholder import SlidePlaceholder
 from pptx.text.text import _Paragraph, TextFrame, _Run
 
 from typstpresenter.model.Element import Element
+from typstpresenter.model.List import List
 from typstpresenter.model.text.Link import Link
 from typstpresenter.model.text.Text import Text, Atom
 from typstpresenter.model.Title import Title
@@ -25,15 +26,19 @@ def _interpret_placeholder(shape: SlidePlaceholder) -> Element | Ignore | None:
             return Title(text=_interpret_text_frame(shape.text_frame))
         case PP_PLACEHOLDER_TYPE.SLIDE_NUMBER:
             return Ignore()
+        case PP_PLACEHOLDER_TYPE.OBJECT:
+            # Just pretend that object means a bunch of text, and nothing else.
+            return _interpret_text_frame(shape.text_frame)
         case _:
             return None
 
 
-def _interpret_text_frame(text_frame: TextFrame) -> Text:
+def _interpret_text_frame(text_frame: TextFrame) -> Text | List:
     if len(text_frame.paragraphs) == 1:
         return _interpret_paragraph(text_frame.paragraphs[0])
     else:
-        raise NotImplementedError()  # TODO Implement as needed
+        # Just pretend any multi-paragraph text is a list
+        return List(items=tuple(_interpret_paragraph(p) for p in text_frame.paragraphs))
 
 
 def _interpret_paragraph(paragraph: _Paragraph) -> Text:

@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
@@ -10,6 +11,9 @@ from typstpresenter.model.Element import Element
 from typstpresenter.model.Title import Title
 from typstpresenter.powerpoint.flatten import flatten
 from typstpresenter.powerpoint.interpret import interpret
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,7 +41,7 @@ class Slide:
         #  class Element(ElementGroup) could solve the problem. Semantically, this might be a bit harder, because
         #  how would you render them? As columns next to each other? Just one after the other? 70/30 split?
         if len(content_elements) > 1:
-            raise ValueError(
+            logger.warning(
                 "Slide hat more than 1 content element, which we currently can't handle."
             )
 
