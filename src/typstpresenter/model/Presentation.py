@@ -17,6 +17,12 @@ class Presentation:
 
     @classmethod
     def from_file(cls, path: Path) -> Self:
+        """
+        Load a presentation from the file at the given path.
+
+        Currently assumes that the path points to a *.pptx file, no other file types can be handled.
+        Will fail if other files are presented, possibly in curious ways.
+        """
         prs = pptx.Presentation(str(path))
         return cls(
             slides=tuple(
@@ -24,3 +30,17 @@ class Presentation:
             ),
             source_path=path,
         )
+
+    def to_typst_str(self) -> str:
+        """
+        Convert the presentation to a string in Typst format and return it.
+        """
+        raise NotImplementedError()  # TODO
+
+    def to_file(self, path: Path) -> None:
+        """
+        Save a presentation to the given path.
+
+        Will output the file in *.typ (Typst) format, no matter the extension.
+        """
+        raise NotImplementedError()  # TODO
