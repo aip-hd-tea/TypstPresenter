@@ -6,12 +6,14 @@ from typing import Self, overload
 
 import pptx
 
+from typstpresenter.model.PresentationTitle import PresentationTitle
 from typstpresenter.model.Slide import Slide
 from typstpresenter.typst.express import express
 
 
 @dataclass
 class Presentation(Sequence[Slide]):
+    title: PresentationTitle
     slides: Sequence[Slide]
 
     # The path to the source file (if sourced from a file)
@@ -26,10 +28,15 @@ class Presentation(Sequence[Slide]):
         Will fail if other files are presented, possibly in curious ways.
         """
         prs = pptx.Presentation(str(path))
+        slides = tuple(Slide.from_pptx_slide(pptx_slide) for pptx_slide in prs.slides)
+
+        # The title slide is metadata in my world, so we remove it from the set of slides later, and extract the
+        # metadata here in a dedicated way.
+        title_slide = slides[0]
+
         return cls(
-            slides=tuple(
-                Slide.from_pptx_slide(pptx_slide) for pptx_slide in prs.slides
-            ),
+            title=title_slide.get_singular_element_or_none(PresentationTitle),
+            slides=slides[1:],
             source_path=path,
         )
 

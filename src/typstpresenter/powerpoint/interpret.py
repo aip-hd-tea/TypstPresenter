@@ -6,6 +6,7 @@ from pptx.text.text import _Paragraph, TextFrame, _Run
 
 from typstpresenter.model.Element import Element
 from typstpresenter.model.List import List
+from typstpresenter.model.PresentationTitle import PresentationTitle
 from typstpresenter.model.text.Link import Link
 from typstpresenter.model.text.Text import Text, Atom
 from typstpresenter.model.Title import Title
@@ -24,6 +25,8 @@ def _interpret_placeholder(shape: SlidePlaceholder) -> Element | Ignore | None:
     match shape.placeholder_format.type:
         case PP_PLACEHOLDER_TYPE.TITLE:
             return Title(text=_interpret_text_frame(shape.text_frame))
+        case PP_PLACEHOLDER_TYPE.CENTER_TITLE:
+            return PresentationTitle(text=_interpret_text_frame(shape.text_frame))
         case PP_PLACEHOLDER_TYPE.SLIDE_NUMBER:
             return Ignore()
         case PP_PLACEHOLDER_TYPE.OBJECT:
