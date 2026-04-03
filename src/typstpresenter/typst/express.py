@@ -9,6 +9,8 @@ from typstpresenter.model.List import List
 from typstpresenter.model.PresentationTitle import PresentationTitle
 from typstpresenter.model.Title import Title
 from typstpresenter.model.text.Link import Link
+from typstpresenter.model.text.Subscript import Subscript
+from typstpresenter.model.text.Superscript import Superscript
 from typstpresenter.model.text.Text import Text
 
 if TYPE_CHECKING:
@@ -35,6 +37,10 @@ def _express_element(element: Element | str) -> str:
             return f'#link("{target}")[{_express_element(text)}]'
         case Text(value):
             return "".join(_express_element(x) for x in value)
+        case Subscript(text):
+            return f"#sub[{_express_element(text)}]"
+        case Superscript(text):
+            return f"#super[{_express_element(text)}]"
         case List(items):
             # TODO Handle nested lists
             return "\n".join(f"- {_express_element(item)}" for item in items)

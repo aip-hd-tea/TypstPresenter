@@ -7,9 +7,11 @@ from pptx.text.text import _Paragraph, TextFrame, _Run
 from typstpresenter.model.Element import Element
 from typstpresenter.model.List import List
 from typstpresenter.model.PresentationTitle import PresentationTitle
-from typstpresenter.model.text.Link import Link
-from typstpresenter.model.text.Text import Text, Atom
 from typstpresenter.model.Title import Title
+from typstpresenter.model.text.Link import Link
+from typstpresenter.model.text.Subscript import Subscript
+from typstpresenter.model.text.Superscript import Superscript
+from typstpresenter.model.text.Text import Text, Atom
 from typstpresenter.powerpoint.Ignore import Ignore
 
 
@@ -48,9 +50,22 @@ def _interpret_paragraph(paragraph: _Paragraph) -> Text:
     return Text(tuple(_interpret_run(run) for run in paragraph.runs))
 
 
+# See https://stackoverflow.com/questions/61329224/how-do-i-add-superscript-subscript-text-to-powerpoint-using-python-pptx
+_SUBSCRIPT = "-25000"
+_SUPERSCRIPT = "30000"
+
+
 def _interpret_run(run: _Run) -> Atom:
     if run.hyperlink.address is not None:
         return Link(text=Text(run.text), target=run.hyperlink.address)
+
+    # The text baseline indicates how high in a line the run is positioned.
+    baseline_position = run.font._element.get("baseline")
+
+    if baseline_position == _SUBSCRIPT:
+        return Subscript(text=Text(run.text))
+    elif baseline_position == _SUPERSCRIPT:
+        return Superscript(text=Text(run.text))
 
     return run.text
 
