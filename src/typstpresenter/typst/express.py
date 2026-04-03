@@ -31,6 +31,14 @@ def express(presentation: Presentation) -> str:
     )
 
 
+def __indent(string: str) -> str:
+    return "\n".join(f"  {line}" for line in string.split("\n"))
+
+
+def __indent_or_add_dash(criterion: bool, string: str) -> str:
+    return __indent(string) if criterion else f"- {string}"
+
+
 def _express_element(element: Element | str) -> str:
     match element:
         case Link(text, target):
@@ -42,8 +50,7 @@ def _express_element(element: Element | str) -> str:
         case Superscript(text):
             return f"#super[{_express_element(text)}]"
         case List(items):
-            # TODO Handle nested lists
-            return "\n".join(f"- {_express_element(item)}" for item in items)
+            return "\n".join(__indent_or_add_dash(isinstance(item, List), _express_element(item)) for item in items)
         case Title(text) | PresentationTitle(text):
             return _express_element(text)
         case str() as s:
