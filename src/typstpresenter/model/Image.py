@@ -3,7 +3,7 @@ from typstpresenter.model.Element import Element
 
 @dataclass(frozen=True)
 class Image(Element):
-    name: str # The relative path it should be rendered at (e.g. Media/slide_1_image_0.png)
+    name: str # Stable, human-readable filename derived from image content (e.g. "golden-horizon-07.png")
     blob: bytes
     ext: str
     width_pt: float | None = None

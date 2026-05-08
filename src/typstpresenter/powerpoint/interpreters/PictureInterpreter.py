@@ -5,6 +5,7 @@ from pptx.shapes.base import BaseShape
 from typstpresenter.model.Element import Element
 from typstpresenter.model.Image import Image
 from typstpresenter.powerpoint.Ignore import Ignore
+from typstpresenter.powerpoint.image_naming import name_for_image
 
 
 class PictureInterpreter:
@@ -12,13 +13,9 @@ class PictureInterpreter:
         return hasattr(shape, "shape_type") and shape.shape_type == MSO_SHAPE_TYPE.PICTURE
 
     def __call__(self, shape: BaseShape | Subshape, context: dict | None = None) -> Element | Ignore | None:
-        context = context or {}
-        slide_idx = context.get("slide_index", 0)
-        elem_idx = context.get("element_index", 0)
-
         ext = shape.image.ext
-        name = f"slide_{slide_idx + 1}_pos_{elem_idx}.{ext}"
         blob = shape.image.blob
+        name = name_for_image(blob, ext)
         width = getattr(shape, 'width', None)
         height = getattr(shape, 'height', None)
         width_pt = getattr(width, 'pt', None) if width else None
