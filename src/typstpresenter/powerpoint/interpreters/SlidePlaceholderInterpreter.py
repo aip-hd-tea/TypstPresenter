@@ -42,16 +42,16 @@ class SlidePlaceholderInterpreter:
 
         match shape.placeholder_format.type:
             case PP_PLACEHOLDER_TYPE.TITLE:
-                return Title(text=_interpret_text_frame(shape.text_frame, default_to_list=False))
+                return Title(text=interpret_text_frame(shape.text_frame, default_to_list=False))
             case PP_PLACEHOLDER_TYPE.CENTER_TITLE:
-                return PresentationTitle(text=_interpret_text_frame(shape.text_frame, default_to_list=False))
+                return PresentationTitle(text=interpret_text_frame(shape.text_frame, default_to_list=False))
             case PP_PLACEHOLDER_TYPE.SLIDE_NUMBER | PP_PLACEHOLDER_TYPE.HEADER | PP_PLACEHOLDER_TYPE.FOOTER | PP_PLACEHOLDER_TYPE.DATE:
                 return Ignore()
             case PP_PLACEHOLDER_TYPE.SUBTITLE:
-                return _interpret_text_frame(shape.text_frame, default_to_list=False)
+                return interpret_text_frame(shape.text_frame, default_to_list=False)
             case PP_PLACEHOLDER_TYPE.OBJECT:
                 # Just pretend that object means a bunch of text, and nothing else.
-                return _interpret_text_frame(shape.text_frame, default_to_list=True)
+                return interpret_text_frame(shape.text_frame, default_to_list=True)
             case _:
                 return None
 
@@ -71,7 +71,7 @@ def _get_de_facto_level(paragraph: _Paragraph) -> int:
     return paragraph.level
 
 
-def _interpret_text_frame(text_frame: TextFrame, default_to_list: bool = True) -> Text | List:
+def interpret_text_frame(text_frame: TextFrame, default_to_list: bool = True) -> Text | List:
     if len(text_frame.paragraphs) == 1:
         return _interpret_paragraph(text_frame.paragraphs[0])
 

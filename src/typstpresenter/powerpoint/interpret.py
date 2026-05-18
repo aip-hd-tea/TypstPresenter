@@ -5,6 +5,7 @@ from pptx.shapes.base import BaseShape
 
 from typstpresenter.model.Element import Element
 from typstpresenter.powerpoint.Ignore import Ignore
+from typstpresenter.powerpoint.interpreters.TableInterpreter import TableInterpreter
 from typstpresenter.powerpoint.interpreters.Interpreter import Interpreter
 from typstpresenter.powerpoint.interpreters.PictureInterpreter import PictureInterpreter
 from typstpresenter.powerpoint.interpreters.SlidePlaceholderInterpreter import SlidePlaceholderInterpreter
@@ -13,6 +14,7 @@ from typstpresenter.powerpoint.interpreters.TextBoxInterpreter import TextBoxInt
 logger = logging.getLogger(__name__)
 
 _interpreters: list[Interpreter] = [
+    TableInterpreter(),
     SlidePlaceholderInterpreter(),
     TextBoxInterpreter(),
     PictureInterpreter(),

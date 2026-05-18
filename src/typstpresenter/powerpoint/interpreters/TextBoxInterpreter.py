@@ -4,7 +4,7 @@ from pptx.shapes.placeholder import SlidePlaceholder
 
 from typstpresenter.model.Element import Element
 from typstpresenter.powerpoint.Ignore import Ignore
-from typstpresenter.powerpoint.interpreters.SlidePlaceholderInterpreter import _interpret_text_frame
+from typstpresenter.powerpoint.interpreters.SlidePlaceholderInterpreter import interpret_text_frame
 
 
 class TextBoxInterpreter:
@@ -16,5 +16,5 @@ class TextBoxInterpreter:
 
     def __call__(self, shape: BaseShape | Subshape, context: dict | None = None) -> Element | Ignore | None:
         if hasattr(shape, "text_frame") and getattr(shape, "has_text_frame", False):
-            return _interpret_text_frame(shape.text_frame, default_to_list=False)
+            return interpret_text_frame(shape.text_frame, default_to_list=False)
         return None
