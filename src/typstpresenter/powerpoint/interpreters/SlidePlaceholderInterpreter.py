@@ -56,6 +56,21 @@ class SlidePlaceholderInterpreter:
                 return None
 
 
+def _get_de_facto_level(paragraph: _Paragraph) -> int:
+    paragraph_properties = paragraph._element.pPr
+
+    if paragraph_properties is not None:
+        # See https://github.com/aip-hd-tea/TypstPresenter/issues/12
+        margin_left_str = paragraph_properties.get("marL")
+
+        # Edge case: Apparently sometimes there are list items which are manually outdented to form level 0.
+        # We currently have one example of this, and have just taken the margin set on it. This number might need tweaking.
+        if margin_left_str is not None and int(margin_left_str) <= 274320:
+            return 0
+
+    return paragraph.level
+
+
 def _interpret_text_frame(text_frame: TextFrame, default_to_list: bool = True) -> Text | List:
     if len(text_frame.paragraphs) == 1:
         return _interpret_paragraph(text_frame.paragraphs[0])
@@ -70,7 +85,9 @@ def _interpret_text_frame(text_frame: TextFrame, default_to_list: bool = True) -
         return Text(tuple(atoms))
 
     # Just pretend any multi-paragraph text is a list
-    paragraphs_by_level = groupby(text_frame.paragraphs, key=lambda item: item.level)
+    non_empty_paragraphs = tuple(p for p in text_frame.paragraphs if p.text)
+
+    paragraphs_by_level = groupby(non_empty_paragraphs, key=_get_de_facto_level)
     list_stack: list[tuple[Level, List]] = []
 
     for level, paragraphs in paragraphs_by_level:
