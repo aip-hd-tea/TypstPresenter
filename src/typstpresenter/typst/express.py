@@ -14,6 +14,7 @@ from typstpresenter.typst.expressors.NoneExpressor import NoneExpressor
 from typstpresenter.typst.expressors.StringExpressor import StringExpressor
 from typstpresenter.typst.expressors.SubscriptExpressor import SubscriptExpressor
 from typstpresenter.typst.expressors.SuperscriptExpressor import SuperscriptExpressor
+from typstpresenter.typst.expressors.TableExpressor import TableExpressor
 from typstpresenter.typst.expressors.TextExpressor import TextExpressor
 from typstpresenter.typst.expressors.TitleExpressor import TitleExpressor
 
@@ -28,6 +29,7 @@ _jinja_env = Environment(
 # If need be, one could encapsulate this, but currently, there is no need.
 _expressors: list[Expressor] = [
     LinkExpressor(),
+    TableExpressor(),
     TextExpressor(),
     SubscriptExpressor(),
     SuperscriptExpressor(),
