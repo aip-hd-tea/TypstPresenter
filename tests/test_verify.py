@@ -115,6 +115,37 @@ def test_method_b_reports_exact_positions(corpus):
         assert abs(probe.bbox.h - truth_el.bbox.h) < 0.02
 
 
+def test_inherited_styles_resolved_from_master(corpus, tmp_path):
+    """Placeholder text without explicit formatting must resolve to the
+    Office-default master styles (title 44pt centered, body 32/28/24pt)."""
+    import pptx
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+
+    from typstpresenter.verify.pptx_inherit import (
+        resolve_alignment,
+        resolve_anchor,
+        resolve_bullet,
+        resolve_font_size_pt,
+    )
+
+    case = _case(corpus, "layout_placeholders")
+    prs = pptx.Presentation(str(case.pptx_path))
+
+    title = prs.slides[0].shapes.title
+    p = title.text_frame.paragraphs[0]
+    assert resolve_font_size_pt(p.runs[0], p, title) == 44.0
+    assert resolve_alignment(p, title) == PP_ALIGN.CENTER
+    assert resolve_anchor(title) == MSO_ANCHOR.MIDDLE
+
+    body = prs.slides[1].placeholders[1]
+    sizes = [
+        resolve_font_size_pt(p.runs[0] if p.runs else None, p, body)
+        for p in body.text_frame.paragraphs
+    ]
+    assert sizes == [32.0, 32.0, 28.0, 24.0]
+    assert resolve_bullet(body.text_frame.paragraphs[0], body) is not None
+
+
 def test_bbox_iou_and_union():
     a = BBox(0, 0, 10, 10)
     b = BBox(5, 5, 10, 10)

@@ -49,13 +49,15 @@ def _shape_text(shape) -> str:
 def _is_left_top_aligned(shape) -> bool:
     """True if the text starts at the box's top-left corner (the only case
     where ink-anchor checks in Method A are meaningful)."""
+    from typstpresenter.verify.pptx_inherit import resolve_alignment, resolve_anchor
+
     if not shape.has_text_frame:
         return True
-    tf = shape.text_frame
-    if tf.vertical_anchor not in (None, MSO_ANCHOR.TOP):
+    if resolve_anchor(shape) not in (None, MSO_ANCHOR.TOP):
         return False
     return all(
-        p.alignment in (None, PP_ALIGN.LEFT) for p in tf.paragraphs
+        resolve_alignment(p, shape) in (None, PP_ALIGN.LEFT)
+        for p in shape.text_frame.paragraphs
     )
 
 

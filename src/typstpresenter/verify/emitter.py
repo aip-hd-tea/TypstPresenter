@@ -31,6 +31,12 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from typstpresenter.verify.geometry import EMU_PER_PT, BBox
 from typstpresenter.verify.method_b import PROBE_PRELUDE
 from typstpresenter.verify.pptx_geometry import element_id
+from typstpresenter.verify.pptx_inherit import (
+    resolve_alignment,
+    resolve_anchor,
+    resolve_bullet,
+    resolve_font_size_pt,
+)
 
 TOUYING_VERSION = "0.6.1"
 CETZ_VERSION = "0.5.2"
@@ -84,12 +90,9 @@ class Fault:
         return expected
 
 
-def _run_size_pt(run, paragraph, default: float) -> float:
-    if run.font.size is not None:
-        return run.font.size.pt
-    if paragraph.font.size is not None:
-        return paragraph.font.size.pt
-    return default
+def _run_size_pt(run, paragraph, shape, default: float) -> float:
+    resolved = resolve_font_size_pt(run, paragraph, shape)
+    return resolved if resolved is not None else default
 
 
 def _run_color(run) -> str | None:
@@ -102,9 +105,9 @@ def _run_color(run) -> str | None:
     return None
 
 
-def _run_markup(run, paragraph, default_size: float) -> str:
-    """One PPTX run as a Typst #text(...) call with its explicit styling."""
-    args = [f"size: {_run_size_pt(run, paragraph, default_size):g}pt"]
+def _run_markup(run, paragraph, shape, default_size: float) -> str:
+    """One PPTX run as a Typst #text(...) call with its effective styling."""
+    args = [f"size: {_run_size_pt(run, paragraph, shape, default_size):g}pt"]
     if run.font.bold:
         args.append('weight: "bold"')
     if run.font.italic:
@@ -118,26 +121,10 @@ def _run_markup(run, paragraph, default_size: float) -> str:
     return f"#text({', '.join(args)})[{inner}]"
 
 
-def _bullet_char(paragraph) -> str | None:
-    """Bullet character from the paragraph properties, if any."""
-    from pptx.oxml.ns import qn
-
-    pPr = paragraph._p.find(qn("a:pPr"))
-    if pPr is None:
-        return None
-    if pPr.find(qn("a:buNone")) is not None:
-        return None
-    bu_char = pPr.find(qn("a:buChar"))
-    if bu_char is not None:
-        return bu_char.get("char")
-    if pPr.find(qn("a:buAutoNum")) is not None:
-        return "1."  # numbering scheme approximated for now
-    return None
-
-
-def _typst_align(alignment) -> str | None:
+def _typst_align(paragraph, shape) -> str | None:
     from pptx.enum.text import PP_ALIGN
 
+    alignment = resolve_alignment(paragraph, shape)
     return {PP_ALIGN.CENTER: "center", PP_ALIGN.RIGHT: "right"}.get(alignment)
 
 
@@ -158,7 +145,7 @@ def _emit_text_body(shape, default_size: float, extra_text: str) -> str:
 
     parts: list[str] = []
     for paragraph in shape.text_frame.paragraphs:
-        runs = [_run_markup(run, paragraph, default_size)
+        runs = [_run_markup(run, paragraph, shape, default_size)
                 for run in paragraph.runs if run.text]
         if not runs:
             continue
@@ -166,18 +153,18 @@ def _emit_text_body(shape, default_size: float, extra_text: str) -> str:
         indent = paragraph.level * 18.0
         if indent:
             prefix += f"#h({indent:g}pt)"
-        bullet = _bullet_char(paragraph)
+        bullet = resolve_bullet(paragraph, shape)
         if bullet:
             prefix += escape_typst(bullet) + " "
         line = f"#par(hanging-indent: 0pt)[{prefix}{''.join(runs)}]"
-        align = _typst_align(paragraph.alignment)
+        align = _typst_align(paragraph, shape)
         if align:
             line = f"#align({align})[{line}]"
         parts.append(line)
     if extra_text:
         parts.append(f"#par[#text(size: {default_size:g}pt)[{escape_typst(extra_text)}]]")
     content = "\n".join(parts)
-    anchor = shape.text_frame.vertical_anchor
+    anchor = resolve_anchor(shape)
     if anchor == MSO_ANCHOR.MIDDLE:
         content = f"#align(horizon)[\n{content}\n]"
     elif anchor == MSO_ANCHOR.BOTTOM:

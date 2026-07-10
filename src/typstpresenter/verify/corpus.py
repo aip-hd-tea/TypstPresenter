@@ -221,6 +221,33 @@ def build_rich_text(path: Path) -> None:
     prs.save(str(path))
 
 
+def build_placeholder_deck(path: Path) -> None:
+    """Level 2: real slide layouts; all styling inherited from the master.
+
+    No run sets an explicit font size, alignment or anchor -- the emitter
+    must resolve them through layout/master/txStyles.
+    """
+    prs = pptx.Presentation()
+
+    slide = prs.slides.add_slide(prs.slide_layouts[0])  # title slide
+    slide.shapes.title.text = "Inherited Styles Deck"
+    slide.placeholders[1].text = "Subtitle set without any explicit formatting"
+
+    slide2 = prs.slides.add_slide(prs.slide_layouts[1])  # title and content
+    slide2.shapes.title.text = "Bullets from the Master"
+    body = slide2.placeholders[1].text_frame
+    body.text = "Top level point with a reasonable amount of words"
+    p = body.add_paragraph()
+    p.text = "Second top level point"
+    p = body.add_paragraph()
+    p.text = "An indented sub-point below it"
+    p.level = 1
+    p = body.add_paragraph()
+    p.text = "Another sub-point on level two"
+    p.level = 2
+    prs.save(str(path))
+
+
 # ------------------------------------------------------- Fletcher generator --
 
 def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
@@ -305,6 +332,8 @@ BUILDERS = {
     "diagram_mixed_shapes": (build_mixed_shapes, "diagram-cetz"),
     # autoresearch level 1: rich text
     "layout_rich_text": (build_rich_text, "layout"),
+    # autoresearch level 2: placeholder layouts with inherited styles
+    "layout_placeholders": (build_placeholder_deck, "layout"),
 }
 
 FAULT_VARIANTS = ("moved", "overflow", "resized", "missing", "extra_text")
