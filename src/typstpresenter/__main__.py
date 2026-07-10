@@ -4,6 +4,7 @@ import typer
 
 from .stats.main import app as stats_app
 from .convert.main import app as convert_app
+from .verify.main import app as verify_app
 
 
 logging.basicConfig(
@@ -17,6 +18,7 @@ logger.setLevel(logging.INFO)
 app = typer.Typer(pretty_exceptions_show_locals=False)
 app.add_typer(convert_app)
 app.add_typer(stats_app)
+app.add_typer(verify_app)
 
 if __name__ == "__main__":
     app()
