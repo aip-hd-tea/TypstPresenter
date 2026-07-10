@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pptx
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 
 from typstpresenter.verify.geometry import (
     EMU_PER_PT,
@@ -43,6 +44,19 @@ def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
     return "\n".join(p.text for p in shape.text_frame.paragraphs).strip()
+
+
+def _is_left_top_aligned(shape) -> bool:
+    """True if the text starts at the box's top-left corner (the only case
+    where ink-anchor checks in Method A are meaningful)."""
+    if not shape.has_text_frame:
+        return True
+    tf = shape.text_frame
+    if tf.vertical_anchor not in (None, MSO_ANCHOR.TOP):
+        return False
+    return all(
+        p.alignment in (None, PP_ALIGN.LEFT) for p in tf.paragraphs
+    )
 
 
 def _bbox_of(shape) -> BBox | None:
@@ -86,7 +100,10 @@ def extract_pptx_geometry(path: Path | str) -> DocGeometry:
                     bbox=bbox,
                     id=element_id(slide_index, shape.shape_id),
                     text=text,
-                    meta={"shape_name": shape.name},
+                    meta={
+                        "shape_name": shape.name,
+                        "align_left_top": _is_left_top_aligned(shape),
+                    },
                 )
             )
         doc.slides.append(sg)

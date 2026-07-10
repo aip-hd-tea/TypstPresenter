@@ -156,6 +156,71 @@ def build_mixed_shapes(path: Path) -> None:
     prs.save(str(path))
 
 
+def build_rich_text(path: Path) -> None:
+    """Level 1: run styling, alignments, vertical anchoring and bullets."""
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.dml.color import RGBColor
+    from pptx.oxml.ns import qn
+    from pptx.util import Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    title = _add_textbox(slide, 0.5, 0.3, 9.0, 0.9, "Rich Text Features", 32, bold=True)
+    title.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+
+    # mixed run styling within one paragraph
+    box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.25), Inches(2.2))
+    box.text_frame.word_wrap = True
+    p = box.text_frame.paragraphs[0]
+    for text, bold, italic, underline, color in [
+        ("Plain, ", False, False, False, None),
+        ("bold, ", True, False, False, None),
+        ("italic, ", False, True, False, None),
+        ("underlined, ", False, False, True, None),
+        ("and colored words", False, False, False, RGBColor(0xC0, 0x00, 0x00)),
+    ]:
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(16)
+        run.font.bold = bold
+        run.font.italic = italic
+        run.font.underline = underline
+        if color is not None:
+            run.font.color.rgb = color
+    p2 = box.text_frame.add_paragraph()
+    run = p2.add_run()
+    run.text = "A second paragraph in the same box."
+    run.font.size = Pt(16)
+
+    # bulleted list with two levels
+    bullets = slide.shapes.add_textbox(Inches(5.25), Inches(1.5), Inches(4.25), Inches(2.2))
+    bullets.text_frame.word_wrap = True
+    items = [("First bullet item", 0), ("Second bullet item", 0),
+             ("Nested sub-item", 1), ("Third bullet item", 0)]
+    for i, (text, level) in enumerate(items):
+        p = bullets.text_frame.paragraphs[0] if i == 0 else bullets.text_frame.add_paragraph()
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(16)
+        p.level = level
+        pPr = p._p.get_or_add_pPr()
+        bu = pPr.makeelement(qn("a:buChar"), {"char": "•"})
+        pPr.append(bu)
+
+    # right-aligned and center-aligned paragraphs
+    aligned = _add_textbox(slide, 0.5, 4.2, 4.25, 2.0,
+                           "Centered line\nRight-aligned line\nLeft-aligned line", 16)
+    aligned.text_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+    aligned.text_frame.paragraphs[1].alignment = PP_ALIGN.RIGHT
+
+    # vertically centered content
+    middle = _add_textbox(slide, 5.25, 4.2, 4.25, 2.0,
+                          "Vertically centered text", 16)
+    middle.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    prs.save(str(path))
+
+
 # ------------------------------------------------------- Fletcher generator --
 
 def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
@@ -230,6 +295,29 @@ def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
 
 # ------------------------------------------------------------ corpus driver --
 
+# Static registry: name -> (pptx builder, case kind). Cases added by the
+# autoresearch loop go here; tests parametrize over these names.
+BUILDERS = {
+    "layout_title_content": (build_title_content, "layout"),
+    "layout_two_columns": (build_two_columns, "layout"),
+    "layout_grid": (build_grid, "layout"),
+    "diagram_flowchart": (build_flowchart, "diagram-cetz"),
+    "diagram_mixed_shapes": (build_mixed_shapes, "diagram-cetz"),
+    # autoresearch level 1: rich text
+    "layout_rich_text": (build_rich_text, "layout"),
+}
+
+FAULT_VARIANTS = ("moved", "overflow", "resized", "missing", "extra_text")
+
+
+def clean_case_names() -> list[str]:
+    return [*BUILDERS, "diagram_flowchart_fletcher"]
+
+
+def fault_case_names() -> list[str]:
+    return [f"layout_two_columns_faulty_{v}" for v in FAULT_VARIANTS]
+
+
 def _find_id(truth: DocGeometry, text_prefix: str) -> str:
     for _, el in truth.all_elements():
         if el.text.startswith(text_prefix):
@@ -244,15 +332,7 @@ def generate_corpus(out_dir: Path | str) -> list[CorpusCase]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cases: list[CorpusCase] = []
 
-    builders = {
-        "layout_title_content": (build_title_content, "layout"),
-        "layout_two_columns": (build_two_columns, "layout"),
-        "layout_grid": (build_grid, "layout"),
-        "diagram_flowchart": (build_flowchart, "diagram-cetz"),
-        "diagram_mixed_shapes": (build_mixed_shapes, "diagram-cetz"),
-    }
-
-    for name, (builder, kind) in builders.items():
+    for name, (builder, kind) in BUILDERS.items():
         pptx_path = out_dir / f"{name}.pptx"
         builder(pptx_path)
         truth = extract_pptx_geometry(pptx_path)

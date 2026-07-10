@@ -21,6 +21,7 @@ Detected issue kinds:
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 
 from typstpresenter.verify.geometry import (
@@ -103,14 +104,20 @@ def _normalize_text(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
-def _text_similarity(a: str, b: str) -> float:
-    a, b = _normalize_text(a), _normalize_text(b)
-    if not a or not b:
+# bullet glyphs / numbering the Typst side prepends to list paragraphs but
+# which are not part of the PPTX paragraph text
+_LIST_PREFIX = re.compile(r"^[\s•◦▪‣·–—*-]+|^\d{1,2}[.)]\s+")
+
+
+def _text_similarity(found: str, truth: str) -> float:
+    found = _normalize_text(_LIST_PREFIX.sub("", found))
+    truth = _normalize_text(truth)
+    if not found or not truth:
         return 0.0
-    # containment counts fully: PDF blocks are often fragments of one box
-    if a in b or b in a:
+    # containment counts fully: PDF lines are fragments of one text box
+    if found in truth or truth in found:
         return 1.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
+    return difflib.SequenceMatcher(None, found, truth).ratio()
 
 
 def _check_geometry(pair: MatchedPair, tol: Tolerances, issues: list[Issue],
@@ -323,7 +330,10 @@ def _match_text(truth_slide, found_slide, tol: Tolerances, report: VerificationR
             ))
             continue
         # Inside a (possibly much larger) box, gross shifts of top-left
-        # aligned text are still detectable via the ink anchor.
+        # aligned text are still detectable via the ink anchor. Centered or
+        # bottom-anchored text legitimately starts away from the corner.
+        if not truth_el.meta.get("align_left_top", True):
+            continue
         dx = abs(union.x - truth_el.bbox.x)
         dy = abs(union.y - truth_el.bbox.y)
         if max(dx, dy) > tol.anchor_pt:

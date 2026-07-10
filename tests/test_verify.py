@@ -14,7 +14,11 @@ import shutil
 import pytest
 
 from typstpresenter.verify.compare import compare_by_id, compare_spatial
-from typstpresenter.verify.corpus import generate_corpus
+from typstpresenter.verify.corpus import (
+    clean_case_names,
+    fault_case_names,
+    generate_corpus,
+)
 from typstpresenter.verify.geometry import BBox
 from typstpresenter.verify.method_a import run_method_a
 from typstpresenter.verify.method_b import run_method_b
@@ -44,22 +48,10 @@ def _report_a(case):
     return compare_spatial(case.truth, result.geometry)
 
 
-CLEAN_CASES = [
-    "layout_title_content",
-    "layout_two_columns",
-    "layout_grid",
-    "diagram_flowchart",
-    "diagram_mixed_shapes",
-    "diagram_flowchart_fletcher",
-]
-
-FAULT_CASES = [
-    "layout_two_columns_faulty_moved",
-    "layout_two_columns_faulty_overflow",
-    "layout_two_columns_faulty_resized",
-    "layout_two_columns_faulty_missing",
-    "layout_two_columns_faulty_extra_text",
-]
+# Derived from the corpus registry so every case added during autoresearch
+# iterations is covered automatically.
+CLEAN_CASES = clean_case_names()
+FAULT_CASES = fault_case_names()
 
 
 @pytest.mark.parametrize("name", CLEAN_CASES)

@@ -84,13 +84,61 @@ class Fault:
         return expected
 
 
-def _font_size_pt(paragraph, default: float) -> float:
-    for run in paragraph.runs:
-        if run.font.size is not None:
-            return run.font.size.pt
+def _run_size_pt(run, paragraph, default: float) -> float:
+    if run.font.size is not None:
+        return run.font.size.pt
     if paragraph.font.size is not None:
         return paragraph.font.size.pt
     return default
+
+
+def _run_color(run) -> str | None:
+    color = run.font.color
+    try:
+        if color and color.type is not None and color.rgb is not None:
+            return str(color.rgb)
+    except AttributeError:
+        pass
+    return None
+
+
+def _run_markup(run, paragraph, default_size: float) -> str:
+    """One PPTX run as a Typst #text(...) call with its explicit styling."""
+    args = [f"size: {_run_size_pt(run, paragraph, default_size):g}pt"]
+    if run.font.bold:
+        args.append('weight: "bold"')
+    if run.font.italic:
+        args.append('style: "italic"')
+    rgb = _run_color(run)
+    if rgb:
+        args.append(f'fill: rgb("#{rgb}")')
+    inner = escape_typst(run.text)
+    if run.font.underline:
+        inner = f"#underline[{inner}]"
+    return f"#text({', '.join(args)})[{inner}]"
+
+
+def _bullet_char(paragraph) -> str | None:
+    """Bullet character from the paragraph properties, if any."""
+    from pptx.oxml.ns import qn
+
+    pPr = paragraph._p.find(qn("a:pPr"))
+    if pPr is None:
+        return None
+    if pPr.find(qn("a:buNone")) is not None:
+        return None
+    bu_char = pPr.find(qn("a:buChar"))
+    if bu_char is not None:
+        return bu_char.get("char")
+    if pPr.find(qn("a:buAutoNum")) is not None:
+        return "1."  # numbering scheme approximated for now
+    return None
+
+
+def _typst_align(alignment) -> str | None:
+    from pptx.enum.text import PP_ALIGN
+
+    return {PP_ALIGN.CENTER: "center", PP_ALIGN.RIGHT: "right"}.get(alignment)
 
 
 def _shape_bbox(shape) -> BBox | None:
@@ -106,18 +154,35 @@ def _shape_bbox(shape) -> BBox | None:
 
 def _emit_text_body(shape, default_size: float, extra_text: str) -> str:
     """Render the paragraphs of a text frame as Typst markup."""
+    from pptx.enum.text import MSO_ANCHOR
+
     parts: list[str] = []
     for paragraph in shape.text_frame.paragraphs:
-        text = "".join(run.text for run in paragraph.runs)
-        if not text:
+        runs = [_run_markup(run, paragraph, default_size)
+                for run in paragraph.runs if run.text]
+        if not runs:
             continue
-        size = _font_size_pt(paragraph, default=default_size)
-        indent = paragraph.level * 12.0
-        line = f"#par(hanging-indent: 0pt)[#h({indent:g}pt)#text(size: {size:g}pt)[{escape_typst(text)}]]"
+        prefix = ""
+        indent = paragraph.level * 18.0
+        if indent:
+            prefix += f"#h({indent:g}pt)"
+        bullet = _bullet_char(paragraph)
+        if bullet:
+            prefix += escape_typst(bullet) + " "
+        line = f"#par(hanging-indent: 0pt)[{prefix}{''.join(runs)}]"
+        align = _typst_align(paragraph.alignment)
+        if align:
+            line = f"#align({align})[{line}]"
         parts.append(line)
     if extra_text:
         parts.append(f"#par[#text(size: {default_size:g}pt)[{escape_typst(extra_text)}]]")
-    return "\n".join(parts)
+    content = "\n".join(parts)
+    anchor = shape.text_frame.vertical_anchor
+    if anchor == MSO_ANCHOR.MIDDLE:
+        content = f"#align(horizon)[\n{content}\n]"
+    elif anchor == MSO_ANCHOR.BOTTOM:
+        content = f"#align(bottom)[\n{content}\n]"
+    return content
 
 
 def _is_diagram_shape(shape) -> bool:
