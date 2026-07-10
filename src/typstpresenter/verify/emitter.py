@@ -37,6 +37,12 @@ from typstpresenter.verify.pptx_inherit import (
     resolve_bullet,
     resolve_font_size_pt,
 )
+from typstpresenter.verify.pptx_style import (
+    shape_fill_rgb,
+    shape_font_rgb,
+    shape_line_rgb,
+    shape_line_width_pt,
+)
 
 TOUYING_VERSION = "0.6.1"
 CETZ_VERSION = "0.5.2"
@@ -178,41 +184,115 @@ def _is_diagram_shape(shape) -> bool:
     )
 
 
-def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool) -> str:
+def _shape_flips(shape) -> tuple[bool, bool]:
+    from pptx.oxml.ns import qn
+
+    xfrm = shape.element.spPr.find(qn("a:xfrm"))
+    if xfrm is None:
+        return False, False
+    return xfrm.get("flipH") == "1", xfrm.get("flipV") == "1"
+
+
+def _connector_is_elbow(shape) -> bool:
+    from pptx.oxml.ns import qn
+
+    prst_geom = shape.element.spPr.find(qn("a:prstGeom"))
+    prst = prst_geom.get("prst") if prst_geom is not None else ""
+    return bool(prst) and prst.startswith("bentConnector")
+
+
+def _cetz_style_args(shape) -> str:
+    """fill/stroke arguments resolved from explicit colors or the theme."""
+    fill = shape_fill_rgb(shape)
+    stroke_rgb = shape_line_rgb(shape)
+    fill_arg = f'fill: rgb("#{fill}")' if fill else "fill: none"
+    if stroke_rgb:
+        width = shape_line_width_pt(shape)
+        stroke_arg = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
+    else:
+        stroke_arg = "stroke: none"
+    return f"{fill_arg}, {stroke_arg}"
+
+
+def _cetz_label_markup(shape, eid: str, probes: bool, default_size: float) -> str:
+    """Shape label content (multi-paragraph, styled, with node probe)."""
+    parts = []
+    if shape.has_text_frame:
+        font_rgb = shape_font_rgb(shape)
+        for paragraph in shape.text_frame.paragraphs:
+            runs = []
+            for run in paragraph.runs:
+                if not run.text:
+                    continue
+                markup = _run_markup(run, paragraph, shape, default_size)
+                # shape text defaults to the style's font color (often white)
+                if font_rgb and "fill:" not in markup:
+                    markup = markup.replace("#text(", f'#text(fill: rgb("#{font_rgb}"), ', 1)
+                runs.append(markup)
+            if runs:
+                parts.append("".join(runs))
+    marker = f'#tp-node-probe("{eid}")' if probes else ""
+    return marker + " \\ ".join(parts)
+
+
+def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
+                     default_size: float = 18.0) -> str:
     """One PPTX autoshape/connector as CeTZ drawing commands (y axis flipped)."""
     from pptx.enum.shapes import MSO_SHAPE
 
     lines = []
     x1, y1, x2, y2 = bbox.x, -bbox.y, bbox.x2, -bbox.y2
+    cx, cy = bbox.center
     is_connector = shape.shape_type not in (MSO_SHAPE_TYPE.AUTO_SHAPE,)
+
     if is_connector:
-        lines.append(f"    line(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), mark: (end: \">\"))")
-        if probes:
-            cx, cy = bbox.center
-            lines.append(f'    content(({cx:.2f}, {-cy:.2f}), [#tp-node-probe("{eid}")])')
-    else:
-        auto = None
-        try:
-            auto = shape.auto_shape_type
-        except (ValueError, AttributeError):
-            pass
-        if auto == MSO_SHAPE.OVAL:
-            cx, cy = bbox.center
-            lines.append(
-                f"    circle(({cx:.2f}, {-cy:.2f}), radius: ({bbox.w / 2:.2f}, {bbox.h / 2:.2f}))"
-            )
+        flip_h, flip_v = _shape_flips(shape)
+        bx, ex = (x2, x1) if flip_h else (x1, x2)
+        by, ey = (y2, y1) if flip_v else (y1, y2)
+        stroke_rgb = shape_line_rgb(shape) or "000000"
+        width = shape_line_width_pt(shape)
+        stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
+        if _connector_is_elbow(shape):
+            mx = (bx + ex) / 2
+            points = (f"({bx:.2f}, {by:.2f}), ({mx:.2f}, {by:.2f}), "
+                      f"({mx:.2f}, {ey:.2f}), ({ex:.2f}, {ey:.2f})")
         else:
-            radius = 4.0 if auto == MSO_SHAPE.ROUNDED_RECTANGLE else 0.0
-            lines.append(
-                f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), radius: {radius:g})"
-            )
-        text = shape.text_frame.text.strip() if shape.has_text_frame else ""
-        cx, cy = bbox.center
-        marker = f"#tp-node-probe(\"{eid}\")" if probes else ""
-        if text or marker:
-            lines.append(
-                f"    content(({cx:.2f}, {-cy:.2f}), [{marker}{escape_typst(text)}])"
-            )
+            points = f"({bx:.2f}, {by:.2f}), ({ex:.2f}, {ey:.2f})"
+        lines.append(f"    line({points}, mark: (end: \">\"), {stroke})")
+        if probes:
+            lines.append(f'    content(({cx:.2f}, {-cy:.2f}), [#tp-node-probe("{eid}")])')
+        return "\n".join(lines)
+
+    auto = None
+    try:
+        auto = shape.auto_shape_type
+    except (ValueError, AttributeError):
+        pass
+    style = _cetz_style_args(shape)
+    if auto == MSO_SHAPE.OVAL:
+        lines.append(
+            f"    circle(({cx:.2f}, {-cy:.2f}), "
+            f"radius: ({bbox.w / 2:.2f}, {bbox.h / 2:.2f}), {style})"
+        )
+    elif auto == MSO_SHAPE.DIAMOND:
+        lines.append(
+            f"    line(({cx:.2f}, {y1:.2f}), ({x2:.2f}, {-cy:.2f}), "
+            f"({cx:.2f}, {y2:.2f}), ({x1:.2f}, {-cy:.2f}), close: true, {style})"
+        )
+    elif auto == MSO_SHAPE.ISOSCELES_TRIANGLE:
+        lines.append(
+            f"    line(({cx:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
+            f"({x1:.2f}, {y2:.2f}), close: true, {style})"
+        )
+    else:
+        radius = 4.0 if auto == MSO_SHAPE.ROUNDED_RECTANGLE else 0.0
+        lines.append(
+            f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
+            f"radius: {radius:g}, {style})"
+        )
+    label = _cetz_label_markup(shape, eid, probes, default_size)
+    if label:
+        lines.append(f"    content(({cx:.2f}, {-cy:.2f}), align(center)[{label}])")
     return "\n".join(lines)
 
 

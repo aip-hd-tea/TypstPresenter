@@ -221,6 +221,65 @@ def build_rich_text(path: Path) -> None:
     prs.save(str(path))
 
 
+def build_styled_shapes(path: Path) -> None:
+    """Level 3: filled/stroked shapes, theme colors, elbow connector.
+
+    - rounded rect keeps its default theme fill (accent1 + white text)
+    - diamond gets an explicit red fill
+    - triangle: explicit green fill, no outline
+    - rect: no fill, thick blue outline
+    - elbow connector and a flipped straight connector
+    """
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_textbox(slide, 0.5, 0.3, 9.0, 0.8, "Styled Shapes", 28, bold=True)
+
+    themed = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.7), Inches(1.5), Inches(2.2), Inches(1.2))
+    themed.text_frame.text = "Theme fill"
+
+    diamond = slide.shapes.add_shape(
+        MSO_SHAPE.DIAMOND, Inches(4.2), Inches(1.3), Inches(1.8), Inches(1.6))
+    diamond.fill.solid()
+    diamond.fill.fore_color.rgb = RGBColor(0xB0, 0x20, 0x20)
+    diamond.text_frame.text = "?"
+
+    triangle = slide.shapes.add_shape(
+        MSO_SHAPE.ISOSCELES_TRIANGLE, Inches(7.2), Inches(1.4), Inches(1.6), Inches(1.4))
+    triangle.fill.solid()
+    triangle.fill.fore_color.rgb = RGBColor(0x20, 0x80, 0x30)
+    triangle.line.fill.background()
+
+    outlined = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Inches(4.2), Inches(4.5), Inches(1.8), Inches(1.2))
+    outlined.fill.background()
+    outlined.line.color.rgb = RGBColor(0x20, 0x40, 0xB0)
+    outlined.line.width = Pt(3)
+    outlined.text_frame.text = "Outline"
+
+    for shape in (themed, diamond, outlined):
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(12)
+
+    elbow = slide.shapes.add_connector(
+        MSO_CONNECTOR.ELBOW,
+        themed.left + themed.width, themed.top + themed.height // 2,
+        diamond.left, diamond.top + diamond.height // 2,
+    )
+    elbow.line.color.rgb = RGBColor(0x40, 0x40, 0x40)
+    # flipped straight connector: drawn bottom-up (end above begin)
+    slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT,
+        outlined.left + outlined.width // 2, outlined.top,
+        diamond.left + diamond.width // 2, diamond.top + diamond.height,
+    )
+    prs.save(str(path))
+
+
 def build_placeholder_deck(path: Path) -> None:
     """Level 2: real slide layouts; all styling inherited from the master.
 
@@ -334,6 +393,8 @@ BUILDERS = {
     "layout_rich_text": (build_rich_text, "layout"),
     # autoresearch level 2: placeholder layouts with inherited styles
     "layout_placeholders": (build_placeholder_deck, "layout"),
+    # autoresearch level 3: styled shapes, theme colors, elbow connectors
+    "diagram_styled_shapes": (build_styled_shapes, "diagram-cetz"),
 }
 
 FAULT_VARIANTS = ("moved", "overflow", "resized", "missing", "extra_text")
