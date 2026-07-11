@@ -136,6 +136,43 @@ ink can show). Both methods: **zero false positives** on all clean cases.
    Method A as a slower cross-check on corpus additions and releases.
    Both are wired into pytest already.
 
+## Autoresearch loop: converter build-out (updated 2026-07-11)
+
+The emitter was grown level by level, each level adding harder test cases
+that must verify clean before moving on (corpus registry in
+[corpus.py](../src/typstpresenter/verify/corpus.py)):
+
+- **L1 rich text**: styled runs, alignment, vertical anchor, bullets.
+- **L2 inherited styles**: placeholder chain (layout → master → txStyles),
+  pinned to Office defaults by unit test.
+- **L3 styled shapes**: theme colors (clrScheme + p:style refs),
+  diamond/triangle, elbow and flipped connectors; found: line width 0 EMU
+  means hairline.
+- **L4 2D diagrams**: decision flowchart in CeTZ and Fletcher; Fletcher
+  needs half-size nodes with `diamond.with(fit: 1)` and a measured
+  calibration pass because its outer bbox is not the node hull. Method A
+  caught an undersized Fletcher diamond that B accepted — the
+  rendered-ink cross-check pays off.
+- **L5 real decks** (tests/data): field text (slide numbers), tables with
+  exact column/row extents, smartquotes off (PPTX text is literal),
+  PowerPoint line metrics (Calibri pitch 1.22 em vs typst 0.632 em +
+  leading), `normAutofit` including a measure-based shrink calibration
+  (PowerPoint stores `fontScale` only after editing — generated decks need
+  it computed). Overflow that already exists in the source (no
+  shrink-autofit) is downgraded to a *warning*: it is not a translation
+  error.
+- **L6 dense lecture decks** (tests/data/IBN_presentations*): group
+  flattening with chOff/chExt transforms, freeforms as bbox shapes,
+  invisible text-container shapes, run merging (a chain of `#text()` calls
+  creates a break opportunity at every run boundary and shreds
+  formula-heavy labels), labels constrained to shape width.
+
+Result on a real 34-slide lecture deck (vlxN04): **Method B: 0 issues**
+(9 source-overflow warnings), end-to-end ~2 s. Method A degrades on dense
+slides (~180 findings from heuristic matching noise) — dense decks are
+therefore gated by Method B only (`CorpusCase.verify_with_a = False`),
+another point for B as the primary gate.
+
 ## Known limitations / next steps
 
 - Ground truth uses the *declared* PPTX box; PowerPoint's own text

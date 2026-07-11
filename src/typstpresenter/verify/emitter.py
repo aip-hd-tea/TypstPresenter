@@ -30,12 +30,14 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from typstpresenter.verify.geometry import EMU_PER_PT, BBox
 from typstpresenter.verify.method_b import PROBE_PRELUDE
-from typstpresenter.verify.pptx_geometry import element_id
+from typstpresenter.verify.pptx_geometry import element_id, iter_flat_shapes
 from typstpresenter.verify.pptx_inherit import (
     resolve_alignment,
     resolve_anchor,
+    resolve_autofit,
     resolve_bullet,
     resolve_font_size_pt,
+    resolve_space_before,
 )
 from typstpresenter.verify.pptx_style import (
     shape_fill_rgb,
@@ -47,7 +49,11 @@ from typstpresenter.verify.pptx_style import (
 TOUYING_VERSION = "0.6.1"
 CETZ_VERSION = "0.5.2"
 
-_ESCAPE = str.maketrans({c: f"\\{c}" for c in '\\#$*_`@<>"~[]'})
+# Every Typst markup-active character must be escaped: braces/brackets and
+# inline markers, but also '/' (starts a comment after another '/'), and the
+# line-start markers =,-,+ (heading/list/enum). Escaping also suppresses
+# smart-dash substitution -- PPTX text is literal.
+_ESCAPE = str.maketrans({c: f"\\{c}" for c in '\\#$*_`@<>"~[]{}/=-+\''})
 
 
 def escape_typst(text: str) -> str:
@@ -96,9 +102,30 @@ class Fault:
         return expected
 
 
-def _run_size_pt(run, paragraph, shape, default: float) -> float:
+# Line metrics for the emitted font stack (Calibri): PowerPoint's single
+# line pitch is ascent+descent+lineGap ~ 1.22 em; typst renders a line as
+# cap-height+descender ~ 0.632 em plus `leading`. Matching the two gives
+# the leading that reproduces PowerPoint's vertical rhythm.
+PPT_LINE_PITCH_EM = 1.22
+TYPST_LINE_HEIGHT_EM = 0.632
+
+
+def _autofit_scales(shape) -> tuple[float, float]:
+    """(fontScale, lnSpcReduction) from a:normAutofit, defaults (1, 0)."""
+    from pptx.oxml.ns import qn
+
+    bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+    fit = bodyPr.find(qn("a:normAutofit")) if bodyPr is not None else None
+    if fit is None:
+        return 1.0, 0.0
+    font_scale = int(fit.get("fontScale") or 100000) / 100000.0
+    lnspc_red = int(fit.get("lnSpcReduction") or 0) / 100000.0
+    return font_scale, lnspc_red
+
+
+def _run_size_pt(run, paragraph, shape, default: float, scale: float = 1.0) -> float:
     resolved = resolve_font_size_pt(run, paragraph, shape)
-    return resolved if resolved is not None else default
+    return (resolved if resolved is not None else default) * scale
 
 
 def _run_color(run) -> str | None:
@@ -111,20 +138,61 @@ def _run_color(run) -> str | None:
     return None
 
 
-def _run_markup(run, paragraph, shape, default_size: float) -> str:
-    """One PPTX run as a Typst #text(...) call with its effective styling."""
-    args = [f"size: {_run_size_pt(run, paragraph, shape, default_size):g}pt"]
-    if run.font.bold:
+def _run_style(run, paragraph, shape, default_size: float, scale: float = 1.0,
+               default_color: str | None = None) -> tuple:
+    """Style signature of a run: (size, bold, italic, underline, color)."""
+    return (
+        round(_run_size_pt(run, paragraph, shape, default_size, scale), 2),
+        bool(run.font.bold),
+        bool(run.font.italic),
+        bool(run.font.underline),
+        _run_color(run) or default_color,
+    )
+
+
+def _styled_text(style: tuple, text: str) -> str:
+    size, bold, italic, underline, rgb = style
+    args = [f"size: {size:g}pt"]
+    if bold:
         args.append('weight: "bold"')
-    if run.font.italic:
+    if italic:
         args.append('style: "italic"')
-    rgb = _run_color(run)
     if rgb:
         args.append(f'fill: rgb("#{rgb}")')
-    inner = escape_typst(run.text)
-    if run.font.underline:
+    inner = escape_typst(text)
+    if underline:
         inner = f"#underline[{inner}]"
     return f"#text({', '.join(args)})[{inner}]"
+
+
+def _paragraph_runs_markup(paragraph, shape, default_size: float,
+                           scale: float = 1.0,
+                           default_color: str | None = None) -> list[str]:
+    """Runs of a paragraph as Typst markup, merging equal-styled neighbors.
+
+    Merging matters beyond cleanliness: a chain of separate #text() calls
+    gives the line breaker a break opportunity at every run boundary, which
+    shreds formula-styled text (many tiny runs) into one word per line.
+    """
+    from pptx.oxml.ns import qn
+
+    chunks: list[tuple[str, tuple]] = []
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        style = _run_style(run, paragraph, shape, default_size, scale, default_color)
+        if chunks and chunks[-1][1] == style:
+            chunks[-1] = (chunks[-1][0] + run.text, style)
+        else:
+            chunks.append((run.text, style))
+    # fields (slide number, date) are not exposed as runs; emit their
+    # cached text with the paragraph's default styling
+    for fld in paragraph._p.findall(qn("a:fld")):
+        t = fld.find(qn("a:t"))
+        if t is not None and t.text:
+            size = round(_run_size_pt(None, paragraph, shape, default_size, scale), 2)
+            chunks.append((t.text, (size, False, False, False, default_color)))
+    return [_styled_text(style, text) for text, style in chunks]
 
 
 def _typst_align(paragraph, shape) -> str | None:
@@ -145,28 +213,47 @@ def _shape_bbox(shape) -> BBox | None:
     )
 
 
-def _emit_text_body(shape, default_size: float, extra_text: str) -> str:
+def _emit_text_body(shape, default_size: float, extra_text: str,
+                    extra_scale: float = 1.0) -> str:
     """Render the paragraphs of a text frame as Typst markup."""
     from pptx.enum.text import MSO_ANCHOR
 
-    parts: list[str] = []
+    font_scale, lnspc_red = _autofit_scales(shape)
+    font_scale *= extra_scale
+    leading_em = max(
+        PPT_LINE_PITCH_EM * (1.0 - lnspc_red) - TYPST_LINE_HEIGHT_EM, 0.1
+    )
+    parts: list[str] = [
+        f"#set par(leading: {leading_em:.3f}em, spacing: {leading_em:.3f}em)"
+    ]
+    first_paragraph = True
     for paragraph in shape.text_frame.paragraphs:
-        runs = [_run_markup(run, paragraph, shape, default_size)
-                for run in paragraph.runs if run.text]
+        runs = _paragraph_runs_markup(paragraph, shape, default_size, font_scale)
         if not runs:
             continue
+        para_size = _run_size_pt(
+            paragraph.runs[0] if paragraph.runs else None,
+            paragraph, shape, default_size, font_scale,
+        )
+        spc_bef = resolve_space_before(paragraph, shape)
+        if spc_bef and not first_paragraph:
+            kind, value = spc_bef
+            gap = value * PPT_LINE_PITCH_EM * para_size if kind == "pct" else value
+            parts.append(f"#v({gap:.2f}pt)")
         prefix = ""
         indent = paragraph.level * 18.0
         if indent:
             prefix += f"#h({indent:g}pt)"
         bullet = resolve_bullet(paragraph, shape)
         if bullet:
-            prefix += escape_typst(bullet) + " "
+            # size the bullet like its paragraph so it doesn't set the pitch
+            prefix += f"#text(size: {para_size:.4g}pt)[{escape_typst(bullet)} ]"
         line = f"#par(hanging-indent: 0pt)[{prefix}{''.join(runs)}]"
         align = _typst_align(paragraph, shape)
         if align:
             line = f"#align({align})[{line}]"
         parts.append(line)
+        first_paragraph = False
     if extra_text:
         parts.append(f"#par[#text(size: {default_size:g}pt)[{escape_typst(extra_text)}]]")
     content = "\n".join(parts)
@@ -179,9 +266,59 @@ def _emit_text_body(shape, default_size: float, extra_text: str) -> str:
 
 
 def _is_diagram_shape(shape) -> bool:
-    return shape.shape_type in (MSO_SHAPE_TYPE.AUTO_SHAPE, MSO_SHAPE_TYPE.LINE) or (
-        shape.element.tag.endswith("}cxnSp")
-    )
+    return shape.shape_type in (
+        MSO_SHAPE_TYPE.AUTO_SHAPE,
+        MSO_SHAPE_TYPE.FREEFORM,  # approximated by its bounding box for now
+        MSO_SHAPE_TYPE.LINE,
+    ) or shape.element.tag.endswith("}cxnSp")
+
+
+# formats the typst `image` function can load directly
+_TYPST_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
+
+
+def _emit_picture(shape, eid: str, media_dir: Path) -> str:
+    """Write the picture blob and return typst markup for it.
+
+    Formats typst cannot load (wmf, emf, tiff, bmp) are converted to PNG
+    via Pillow when possible; otherwise a placeholder frame keeps the
+    geometry intact.
+    """
+    image = shape.image
+    ext = image.ext.lower()
+    if ext in _TYPST_IMAGE_EXTS:
+        filename = f"{eid}.{ext}"
+        (media_dir / filename).write_bytes(image.blob)
+        return f'#image("{media_dir.name}/{filename}", width: 100%, height: 100%)'
+    try:
+        import io
+
+        from PIL import Image as PILImage
+
+        with PILImage.open(io.BytesIO(image.blob)) as im:
+            filename = f"{eid}.png"
+            im.convert("RGBA").save(media_dir / filename)
+        return f'#image("{media_dir.name}/{filename}", width: 100%, height: 100%)'
+    except Exception:
+        return ('#rect(width: 100%, height: 100%, stroke: 0.5pt + gray)'
+                f'// unsupported image format: {ext}')
+
+
+def _emit_table(shape, default_size: float) -> str:
+    """A PPTX table as a Typst table with the exact column/row extents."""
+    table = shape.table
+    columns = ", ".join(f"{c.width / EMU_PER_PT:.2f}pt" for c in table.columns)
+    rows = ", ".join(f"{r.height / EMU_PER_PT:.2f}pt" for r in table.rows)
+    cells = []
+    for row in table.rows:
+        for cell in row.cells:
+            runs = []
+            for paragraph in cell.text_frame.paragraphs:
+                runs += _paragraph_runs_markup(paragraph, shape, default_size)
+            cells.append(f"  [{''.join(runs)}],")
+    header = (f"#table(\n  columns: ({columns}),\n  rows: ({rows}),\n"
+              "  inset: 3pt, stroke: 0.5pt,\n")
+    return header + "\n".join(cells) + "\n)"
 
 
 def _shape_flips(shape) -> tuple[bool, bool]:
@@ -218,21 +355,15 @@ def _cetz_label_markup(shape, eid: str, probes: bool, default_size: float) -> st
     """Shape label content (multi-paragraph, styled, with node probe)."""
     parts = []
     if shape.has_text_frame:
+        # shape text defaults to the style's font color (often white)
         font_rgb = shape_font_rgb(shape)
         for paragraph in shape.text_frame.paragraphs:
-            runs = []
-            for run in paragraph.runs:
-                if not run.text:
-                    continue
-                markup = _run_markup(run, paragraph, shape, default_size)
-                # shape text defaults to the style's font color (often white)
-                if font_rgb and "fill:" not in markup:
-                    markup = markup.replace("#text(", f'#text(fill: rgb("#{font_rgb}"), ', 1)
-                runs.append(markup)
+            runs = _paragraph_runs_markup(paragraph, shape, default_size,
+                                          default_color=font_rgb)
             if runs:
-                parts.append("".join(runs))
+                parts.append(f"#par[{''.join(runs)}]")
     marker = f'#tp-node-probe("{eid}")' if probes else ""
-    return marker + " \\ ".join(parts)
+    return marker + "".join(parts)
 
 
 def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
@@ -292,7 +423,26 @@ def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
         )
     label = _cetz_label_markup(shape, eid, probes, default_size)
     if label:
-        lines.append(f"    content(({cx:.2f}, {-cy:.2f}), align(center)[{label}])")
+        from pptx.enum.text import MSO_ANCHOR
+
+        # constrain the label to the shape width so long text wraps like
+        # PowerPoint instead of spreading beyond the shape
+        label_w = max(bbox.w - 7.2, 7.2)
+        boxed = f"box(width: {label_w:.2f}pt, align(center)[{label}])"
+        # respect the text frame's vertical anchor: top/bottom-anchored
+        # panels must not be centered (their text grows from the edge).
+        # The OOXML default when no anchor is set anywhere is "t" (top).
+        anchor = resolve_anchor(shape) if shape.has_text_frame else None
+        if anchor is None or anchor == MSO_ANCHOR.TOP:
+            lines.append(
+                f'    content(({cx:.2f}, {y1 - 3.6:.2f}), anchor: "north", {boxed})'
+            )
+        elif anchor == MSO_ANCHOR.BOTTOM:
+            lines.append(
+                f'    content(({cx:.2f}, {y2 + 3.6:.2f}), anchor: "south", {boxed})'
+            )
+        else:
+            lines.append(f"    content(({cx:.2f}, {-cy:.2f}), {boxed})")
     return "\n".join(lines)
 
 
@@ -330,70 +480,101 @@ def emit_touying(
         "  footer: none,",
         ")",
         '#set text(font: ("Calibri", "Arial", "Liberation Sans"))',
+        # PPTX text is literal; PowerPoint does not substitute quotes at render
+        "#set smartquote(enabled: false)",
         "",
     ]
     if probes:
         header.append(PROBE_PRELUDE)
 
     media_dir = out_path.parent / f"{out_path.stem}_media"
-    body: list[str] = []
+    # elements whose bodyPr requests shrink-on-overflow; PowerPoint computes
+    # the actual fontScale at edit time, so we must derive it ourselves
+    autofit_ids: set[str] = set()
 
-    for slide_index, slide in enumerate(prs.slides):
-        body.append("#slide[")
-        cetz_lines: list[str] = []
-        for shape in slide.shapes:
-            bbox = _shape_bbox(shape)
-            if bbox is None:
-                continue
-            eid = element_id(slide_index, shape.shape_id)
-            fault = faults_by_id.get(eid)
-            if fault:
-                if fault.drop:
+    def build_body(shrink: dict[str, float]) -> list[str]:
+        body: list[str] = []
+        for slide_index, slide in enumerate(prs.slides):
+            body.append("#slide[")
+            cetz_lines: list[str] = []
+            for shape, bbox in iter_flat_shapes(slide.shapes):
+                eid = element_id(slide_index, shape.shape_id)
+                fault = faults_by_id.get(eid)
+                if fault:
+                    if fault.drop:
+                        continue
+                    bbox = replace(
+                        bbox,
+                        x=bbox.x + fault.dx, y=bbox.y + fault.dy,
+                        w=bbox.w * fault.scale_w, h=bbox.h * fault.scale_h,
+                    )
+
+                if _is_diagram_shape(shape):
+                    cetz_lines.append(_emit_cetz_shape(shape, eid, bbox, probes))
                     continue
-                bbox = replace(
-                    bbox,
-                    x=bbox.x + fault.dx, y=bbox.y + fault.dy,
-                    w=bbox.w * fault.scale_w, h=bbox.h * fault.scale_h,
-                )
 
-            if _is_diagram_shape(shape):
-                cetz_lines.append(_emit_cetz_shape(shape, eid, bbox, probes))
-                continue
+                if getattr(shape, "has_table", False):
+                    content = _emit_table(shape, default_font_size)
+                elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    content = _emit_picture(shape, eid, media_dir)
+                elif shape.has_text_frame and shape.text_frame.text.strip():
+                    if resolve_autofit(shape) == "shrink":
+                        autofit_ids.add(eid)
+                    content = _emit_text_body(
+                        shape, default_size=default_font_size,
+                        extra_text=fault.extra_text if fault else "",
+                        extra_scale=shrink.get(eid, 1.0),
+                    )
+                else:
+                    continue
 
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                media_dir.mkdir(parents=True, exist_ok=True)
-                image = shape.image
-                filename = f"{eid}.{image.ext}"
-                (media_dir / filename).write_bytes(image.blob)
-                content = f'#image("{media_dir.name}/{filename}", width: 100%, height: 100%)'
-            elif shape.has_text_frame and shape.text_frame.text.strip():
-                content = _emit_text_body(
-                    shape, default_size=default_font_size,
-                    extra_text=fault.extra_text if fault else "",
-                )
-            else:
-                continue
+                geometry = f"{bbox.x:.2f}pt, {bbox.y:.2f}pt, {bbox.w:.2f}pt, {bbox.h:.2f}pt"
+                if probes:
+                    body.append(f'  #tp-probe("{eid}", {geometry})[\n{content}\n  ]')
+                else:
+                    body.append(
+                        f"  #place(top + left, dx: {bbox.x:.2f}pt, dy: {bbox.y:.2f}pt, "
+                        f"block(width: {bbox.w:.2f}pt, height: {bbox.h:.2f}pt)[\n{content}\n  ])"
+                    )
 
-            geometry = f"{bbox.x:.2f}pt, {bbox.y:.2f}pt, {bbox.w:.2f}pt, {bbox.h:.2f}pt"
-            if probes:
-                body.append(f'  #tp-probe("{eid}", {geometry})[\n{content}\n  ]')
-            else:
-                body.append(
-                    f"  #place(top + left, dx: {bbox.x:.2f}pt, dy: {bbox.y:.2f}pt, "
-                    f"block(width: {bbox.w:.2f}pt, height: {bbox.h:.2f}pt)[\n{content}\n  ])"
-                )
+            if cetz_lines:
+                body.append("  #place(top + left, cetz.canvas(length: 1pt, {")
+                body.append("    import cetz.draw: *")
+                body.append("    set-style(stroke: 0.75pt)")
+                # invisible full-page rect anchors the canvas at the page
+                # origin, otherwise CeTZ shrink-wraps it and everything shifts
+                body.append(f"    rect((0, 0), ({page_w:.2f}, {-page_h:.2f}), stroke: none)")
+                body.append("\n".join(cetz_lines))
+                body.append("  }))")
+            body.append("]")
+            body.append("")
+        return body
 
-        if cetz_lines:
-            body.append("  #place(top + left, cetz.canvas(length: 1pt, {")
-            body.append("    import cetz.draw: *")
-            body.append("    set-style(stroke: 0.75pt)")
-            # invisible full-page rect anchors the canvas at the page origin,
-            # otherwise CeTZ shrink-wraps it and all coordinates shift
-            body.append(f"    rect((0, 0), ({page_w:.2f}, {-page_h:.2f}), stroke: none)")
-            body.append("\n".join(cetz_lines))
-            body.append("  }))")
-        body.append("]")
-        body.append("")
+    def write(shrink: dict[str, float]) -> None:
+        out_path.write_text("\n".join(header + build_body(shrink)),
+                            encoding="utf-8", newline="\n")
 
-    out_path.write_text("\n".join(header + body), encoding="utf-8", newline="\n")
+    write({})
+
+    # Autofit calibration: like PowerPoint at edit time, measure the laid-out
+    # content (via the probes) and shrink autofit text until it fits its box.
+    if probes and autofit_ids:
+        from typstpresenter.verify.typst_tools import query
+
+        shrink: dict[str, float] = {}
+        for _ in range(4):
+            measured = query(out_path, "<tp-probe>").value
+            needed = {
+                p["id"]: p["h"] / p["content-h"]
+                for p in measured
+                if "w" in p and p["id"] in autofit_ids
+                and p["content-h"] > p["h"] + 0.5
+            }
+            if not needed:
+                break
+            for eid, ratio in needed.items():
+                shrink[eid] = shrink.get(eid, 1.0) * min(ratio, 0.97)
+            write(shrink)
+
     return out_path

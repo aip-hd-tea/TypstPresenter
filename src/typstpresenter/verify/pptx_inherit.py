@@ -81,7 +81,24 @@ def _props_from_lvl(lvl) -> dict:
             props["bullet"] = bu_char.get("char")
         elif lvl.find(qn("a:buAutoNum")) is not None:
             props["bullet"] = "1."
+    spc = _space_before_of(lvl)
+    if spc is not None:
+        props["spc_bef"] = spc
     return props
+
+
+def _space_before_of(pPr) -> tuple[str, float] | None:
+    """spcBef as ("pct", fraction-of-line) or ("pt", points), if present."""
+    spcBef = pPr.find(qn("a:spcBef"))
+    if spcBef is None:
+        return None
+    pct = spcBef.find(qn("a:spcPct"))
+    if pct is not None and pct.get("val"):
+        return ("pct", int(pct.get("val")) / 100000.0)
+    pts = spcBef.find(qn("a:spcPts"))
+    if pts is not None and pts.get("val"):
+        return ("pt", int(pts.get("val")) / 100.0)
+    return None
 
 
 def _lst_style_props(shape, level: int) -> dict:
@@ -158,6 +175,44 @@ def resolve_alignment(paragraph, shape) -> PP_ALIGN | None:
         return paragraph.alignment
     algn = _inherited_prop(shape, paragraph.level, "algn")
     return _ALGN.get(algn) if algn else None
+
+
+def resolve_space_before(paragraph, shape) -> tuple[str, float] | None:
+    """Effective paragraph space-before, explicit or inherited."""
+    pPr = paragraph._p.find(qn("a:pPr"))
+    if pPr is not None:
+        spc = _space_before_of(pPr)
+        if spc is not None:
+            return spc
+    return _inherited_prop(shape, paragraph.level, "spc_bef")
+
+
+def resolve_autofit(shape) -> str:
+    """Effective autofit mode: "shrink" (normAutofit), "resize" (spAutoFit)
+    or "none". PowerPoint placeholders inherit this through bodyPr."""
+    if not getattr(shape, "has_text_frame", False):
+        return "none"
+
+    def _fit_of(candidate) -> str | None:
+        bodyPr = candidate.text_frame._txBody.find(qn("a:bodyPr"))
+        if bodyPr is None:
+            return None
+        if bodyPr.find(qn("a:normAutofit")) is not None:
+            return "shrink"
+        if bodyPr.find(qn("a:spAutoFit")) is not None:
+            return "resize"
+        if bodyPr.find(qn("a:noAutofit")) is not None:
+            return "none"
+        return None
+
+    fit = _fit_of(shape)
+    if fit:
+        return fit
+    for ancestor in _inheritance_chain(shape):
+        fit = _fit_of(ancestor)
+        if fit:
+            return fit
+    return "none"
 
 
 def resolve_anchor(shape) -> MSO_ANCHOR | None:

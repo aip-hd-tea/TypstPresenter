@@ -103,9 +103,12 @@ def run_benchmark(corpus_dir: Path | str, repeats: int = 3,
             score_a.seconds.append(time.perf_counter() - start)
 
             if repeat == 0:
-                _score(report_a.issues, case.expected_issues_a, score_a,
-                       case.allows_extra_text)
-                _score(report_b.issues, case.expected_issues_b, score_b, False)
+                # warnings participate in detection: they are reported to the
+                # user, merely tagged as pre-existing in the source
+                _score(report_a.issues + report_a.warnings,
+                       case.expected_issues_a, score_a, case.allows_extra_text)
+                _score(report_b.issues + report_b.warnings,
+                       case.expected_issues_b, score_b, False)
 
         results.append(CaseResult(case=case, a=score_a, b=score_b))
     return results

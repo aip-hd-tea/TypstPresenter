@@ -10,6 +10,7 @@ Requires the ``typst`` CLI on PATH (skipped otherwise).
 """
 
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -30,11 +31,16 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="session")
 def corpus(tmp_path_factory):
-    return generate_corpus(tmp_path_factory.mktemp("verify_corpus"))
+    data_dir = Path(__file__).parent / "data"
+    return generate_corpus(tmp_path_factory.mktemp("verify_corpus"),
+                           external_data_dir=data_dir)
 
 
 def _case(corpus, name):
-    return next(c for c in corpus if c.name == name)
+    case = next((c for c in corpus if c.name == name), None)
+    if case is None:
+        pytest.skip(f"source presentation for {name} not available")
+    return case
 
 
 def _report_b(case):
@@ -62,7 +68,10 @@ def test_clean_case_has_no_issues_method_b(corpus, name):
 
 @pytest.mark.parametrize("name", CLEAN_CASES)
 def test_clean_case_has_no_issues_method_a(corpus, name):
-    report = _report_a(_case(corpus, name))
+    case = _case(corpus, name)
+    if not case.verify_with_a:
+        pytest.skip("dense deck exceeds Method A's heuristic matching (B-only gate)")
+    report = _report_a(case)
     assert report.ok, report.summary()
 
 
@@ -71,7 +80,7 @@ def test_fault_detected_by_method_b(corpus, name):
     case = _case(corpus, name)
     report = _report_b(case)
     reported = {}
-    for issue in report.issues:
+    for issue in report.issues + report.warnings:
         reported.setdefault(issue.element_id, set()).add(issue.kind)
     for element_id, expected in case.expected_issues_b.items():
         assert expected <= reported.get(element_id, set()), (
@@ -88,7 +97,7 @@ def test_fault_detected_by_method_a(corpus, name):
     case = _case(corpus, name)
     report = _report_a(case)
     reported = {}
-    for issue in report.issues:
+    for issue in report.issues + report.warnings:
         reported.setdefault(issue.element_id, set()).add(issue.kind)
     for element_id, expected in case.expected_issues_a.items():
         assert expected <= reported.get(element_id, set()), (

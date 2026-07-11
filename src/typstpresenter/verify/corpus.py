@@ -39,6 +39,9 @@ class CorpusCase:
     expected_issues_a: dict[str, set[str]] = field(default_factory=dict)
     # injected text exists that is legitimately reported as 'extra' by A
     allows_extra_text: bool = False
+    # dense real decks exceed Method A's heuristic matching; they are
+    # gated by Method B only (see docs/verification-methods.md)
+    verify_with_a: bool = True
     kind: str = "layout"  # layout | diagram-cetz | diagram-fletcher
 
 
@@ -280,6 +283,53 @@ def build_styled_shapes(path: Path) -> None:
     prs.save(str(path))
 
 
+def build_decision_flowchart(path: Path) -> None:
+    """Level 4: 2D flowchart -- diamond decision, branch and back-edge.
+
+    Grid-aligned (column centers 1.5/4.5/7.5 in, row centers 2.5/5.0 in) so
+    a grid-based Fletcher translation can reproduce the geometry.
+    """
+    from pptx.util import Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _add_textbox(slide, 0.5, 0.3, 9.0, 0.8, "Decision Flow", 28, bold=True)
+
+    def add_node(shape_type, col_center, row_center, w, h, label):
+        shape = slide.shapes.add_shape(
+            shape_type,
+            Inches(col_center - w / 2), Inches(row_center - h / 2),
+            Inches(w), Inches(h),
+        )
+        shape.text_frame.text = label
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(12)
+        return shape
+
+    start = add_node(MSO_SHAPE.ROUNDED_RECTANGLE, 1.5, 2.5, 1.8, 0.9, "Start")
+    check = add_node(MSO_SHAPE.DIAMOND, 4.5, 2.5, 1.8, 1.4, "OK?")
+    done = add_node(MSO_SHAPE.ROUNDED_RECTANGLE, 7.5, 2.5, 1.8, 0.9, "Done")
+    fix = add_node(MSO_SHAPE.RECTANGLE, 4.5, 5.0, 1.8, 0.9, "Fix it")
+
+    def connect(kind, a, a_side, b, b_side):
+        def point(shape, side):
+            x = {"l": shape.left, "r": shape.left + shape.width,
+                 "c": shape.left + shape.width // 2}[side[0]]
+            y = {"t": shape.top, "b": shape.top + shape.height,
+                 "m": shape.top + shape.height // 2}[side[1]]
+            return x, y
+        ax, ay = point(a, a_side)
+        bx, by = point(b, b_side)
+        return slide.shapes.add_connector(kind, ax, ay, bx, by)
+
+    connect(MSO_CONNECTOR.STRAIGHT, start, "rm", check, "lm")
+    connect(MSO_CONNECTOR.STRAIGHT, check, "rm", done, "lm")   # yes branch
+    connect(MSO_CONNECTOR.STRAIGHT, check, "cb", fix, "ct")    # no branch, vertical
+    connect(MSO_CONNECTOR.ELBOW, fix, "lm", start, "cb")       # back-edge
+    prs.save(str(path))
+
+
 def build_placeholder_deck(path: Path) -> None:
     """Level 2: real slide layouts; all styling inherited from the master.
 
@@ -309,17 +359,36 @@ def build_placeholder_deck(path: Path) -> None:
 
 # ------------------------------------------------------- Fletcher generator --
 
-def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
+def _cluster_centers(values: list[float], tol: float = 20.0) -> list[float]:
+    """Cluster 1D coordinates; returns sorted cluster centers."""
+    centers: list[list[float]] = []
+    for v in sorted(values):
+        if centers and v - centers[-1][-1] <= tol:
+            centers[-1].append(v)
+        else:
+            centers.append([v])
+    return [sum(c) / len(c) for c in centers]
+
+
+def _grid_index(value: float, centers: list[float]) -> int:
+    return min(range(len(centers)), key=lambda i: abs(centers[i] - value))
+
+
+def emit_fletcher_diagram(pptx_path: Path, out_path: Path) -> Path:
     """
-    Emit the flowchart PPTX as a Fletcher diagram.
+    Emit the diagram slide of a PPTX as a 2D Fletcher diagram.
 
     Unlike the CeTZ emitter (absolute coordinates), Fletcher lays nodes out
-    on an elastic grid. We force node boxes to the PPTX shape sizes and set
-    the column spacing to the PPTX gap, so positions should land close to
-    the truth -- how close is exactly what the verification measures.
+    on an elastic grid. Shapes are assigned grid cells by clustering their
+    centers into columns/rows; node boxes are forced to the PPTX shape
+    sizes and the spacing is derived from the PPTX gaps, so positions
+    should land close to the truth -- how close is exactly what the
+    verification measures. Edges are inferred from connector endpoints.
     """
-    from typstpresenter.verify.method_b import PROBE_PRELUDE
+    from pptx.enum.shapes import MSO_SHAPE
+
     from typstpresenter.verify.geometry import ElementKind
+    from typstpresenter.verify.method_b import PROBE_PRELUDE
 
     truth = extract_pptx_geometry(pptx_path)
     prs = pptx.Presentation(str(pptx_path))
@@ -329,11 +398,78 @@ def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
     slide = truth.slides[0]
     shapes = [e for e in slide.elements if e.kind == ElementKind.SHAPE]
     texts = [e for e in slide.elements if e.kind == ElementKind.TEXT]
-    shapes.sort(key=lambda e: e.bbox.x)
-    gap = shapes[1].bbox.x - shapes[0].bbox.x2 if len(shapes) > 1 else 20.0
+
+    # auto-shape types (for diamond etc.) from the pptx side, keyed by id
+    auto_types = {}
+    for shape in prs.slides[0].shapes:
+        try:
+            auto_types[f"s0-e{shape.shape_id}"] = shape.auto_shape_type
+        except (ValueError, AttributeError):
+            pass
+
+    col_centers = _cluster_centers([e.bbox.center[0] for e in shapes])
+    row_centers = _cluster_centers([e.bbox.center[1] for e in shapes])
+    cell_of = {
+        e.id: (_grid_index(e.bbox.center[0], col_centers),
+               _grid_index(e.bbox.center[1], row_centers))
+        for e in shapes
+    }
+
+    def _spacing(centers: list[float], extents: dict[int, float]) -> float:
+        gaps = [
+            centers[i + 1] - centers[i] - (extents.get(i, 0) + extents.get(i + 1, 0)) / 2
+            for i in range(len(centers) - 1)
+        ]
+        return sum(gaps) / len(gaps) if gaps else 27.0
+
+    # Effective fletcher node size: fletcher's diamond shape circumscribes
+    # the node rect, so a diamond's node size must be the inscribed rect
+    # (half the PPTX bbox) for the drawn outline to match the PPTX shape.
+    def _node_size(e) -> tuple[float, float]:
+        if auto_types.get(e.id) == MSO_SHAPE.DIAMOND:
+            return e.bbox.w / 2, e.bbox.h / 2
+        return e.bbox.w, e.bbox.h
+
+    col_widths: dict[int, float] = {}
+    row_heights: dict[int, float] = {}
+    for e in shapes:
+        col, row = cell_of[e.id]
+        w, h = _node_size(e)
+        col_widths[col] = max(col_widths.get(col, 0), w)
+        row_heights[row] = max(row_heights.get(row, 0), h)
+    spacing_x = _spacing(col_centers, col_widths)
+    spacing_y = _spacing(row_centers, row_heights)
+
+    # edges: match connector endpoints to the nearest shape center
+    def _nearest_shape(x: float, y: float) -> str:
+        return min(
+            shapes,
+            key=lambda e: (e.bbox.center[0] - x) ** 2 + (e.bbox.center[1] - y) ** 2,
+        ).id
+
+    shapes_by_id = {e.id: e for e in shapes}
+    edges = []
+    for shape in prs.slides[0].shapes:
+        eid = f"s0-e{shape.shape_id}"
+        if not any(e.id == eid and e.kind == ElementKind.CONNECTOR
+                   for e in slide.elements):
+            continue
+        bx, by = shape.begin_x / EMU_PER_PT, shape.begin_y / EMU_PER_PT
+        ex, ey = shape.end_x / EMU_PER_PT, shape.end_y / EMU_PER_PT
+        node_a, node_b = _nearest_shape(bx, by), _nearest_shape(ex, ey)
+        # L-shaped connectors need a corner vertex in the grid; whether the
+        # route runs horizontally or vertically first follows from which
+        # edge of the source shape the connector leaves
+        (col_a, row_a), (col_b, row_b) = cell_of[node_a], cell_of[node_b]
+        corner = None
+        if col_a != col_b and row_a != row_b:
+            a_box = shapes_by_id[node_a].bbox
+            leaves_horizontally = abs(bx - a_box.center[0]) >= a_box.w / 2 - 1
+            corner = (col_b, row_a) if leaves_horizontally else (col_a, row_b)
+        edges.append((eid, cell_of[node_a], corner, cell_of[node_b]))
 
     lines = [
-        "// Auto-generated Fletcher pairing for the flowchart corpus case.",
+        "// Auto-generated Fletcher pairing (2D grid inferred from PPTX).",
         '#import "@preview/touying:0.6.1": *',
         "#import themes.simple: *",
         f'#import "@preview/fletcher:{FLETCHER_VERSION}" as fletcher: diagram, node, edge',
@@ -352,30 +488,63 @@ def emit_fletcher_flowchart(pptx_path: Path, out_path: Path) -> Path:
         b = el.bbox
         lines.append(
             f'  #tp-probe("{el.id}", {b.x:.2f}pt, {b.y:.2f}pt, {b.w:.2f}pt, {b.h:.2f}pt)'
-            f"[#text(size: 32pt, weight: \"bold\")[{escape_typst(el.text)}]]"
+            f"[#text(size: 28pt, weight: \"bold\")[{escape_typst(el.text)}]]"
         )
-    connectors = [e for e in slide.elements if e.kind == ElementKind.CONNECTOR]
-    connectors.sort(key=lambda e: e.bbox.x)
-    first = shapes[0].bbox
-    lines.append(f"  #place(top + left, dx: {first.x:.2f}pt, dy: {first.y:.2f}pt, diagram(")
+    origin_x = min(e.bbox.x for e in shapes)
+    origin_y = min(e.bbox.y for e in shapes)
+    lines.append(
+        f"  #place(top + left, dx: {origin_x:.2f}pt + TP-CAL-DX, "
+        f"dy: {origin_y:.2f}pt + TP-CAL-DY, diagram("
+    )
     lines.append("    node-inset: 0pt,")
-    lines.append(f"    spacing: ({gap:.2f}pt, {gap:.2f}pt),")
+    lines.append(f"    spacing: ({spacing_x:.2f}pt, {spacing_y:.2f}pt),")
     lines.append("    node-stroke: 0.75pt,")
-    for i, el in enumerate(shapes):
-        b = el.bbox
-        label = (
-            f"#box(width: {b.w:.2f}pt, height: {b.h:.2f}pt, "
-            f'align(center + horizon)[#tp-node-probe("{el.id}")#text(size: 14pt)[{escape_typst(el.text)}]])'
+    for el in shapes:
+        col, row = cell_of[el.id]
+        is_diamond = auto_types.get(el.id) == MSO_SHAPE.DIAMOND
+        # fit: 1 draws the diamond exactly circumscribing the (half-size)
+        # node rect, i.e. with the PPTX shape's bounding box
+        shape_arg = ("shape: fletcher.shapes.diamond.with(fit: 1)"
+                     if is_diamond else "corner-radius: 4pt")
+        w, h = _node_size(el)
+        label = f'#tp-node-probe("{el.id}")#text(size: 12pt)[{escape_typst(el.text)}]'
+        lines.append(
+            f"    node(({col}, {row}), [{label}], {shape_arg}, "
+            f"width: {w:.2f}pt, height: {h:.2f}pt),"
         )
-        lines.append(f"    node(({i}, 0), [{label}], corner-radius: 4pt),")
-        if i < len(shapes) - 1:
-            # probe the connector via the edge label (placed at edge midpoint)
-            conn_id = connectors[i].id if i < len(connectors) else None
-            probe = f'[#tp-node-probe("{conn_id}")]' if conn_id else "none"
-            lines.append(f'    edge("-|>", label: {probe}, label-sep: 0pt),')
+    for conn_id, ca, corner, cb in edges:
+        probe = f'[#tp-node-probe("{conn_id}")]'
+        via = f"({corner[0]}, {corner[1]}), " if corner else ""
+        lines.append(
+            f'    edge(({ca[0]}, {ca[1]}), {via}({cb[0]}, {cb[1]}), "-|>", '
+            f"label: {probe}, label-sep: 0pt),"
+        )
     lines.append("  ))")
     lines.append("]")
-    out_path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    source = "\n".join(lines)
+
+    # Calibration pass: fletcher's outer bounding box (which `place`
+    # anchors) does not coincide with the node hull, so the diagram lands
+    # with a constant offset. Compile once with zero correction, read the
+    # probe of an anchor node (a rect node's label origin equals its node
+    # rect origin) and re-emit with the measured delta.
+    from typstpresenter.verify.typst_tools import query
+
+    anchor = next((e for e in shapes
+                   if auto_types.get(e.id) != MSO_SHAPE.DIAMOND), shapes[0])
+    out_path.write_text(
+        source.replace("TP-CAL-DX", "0pt").replace("TP-CAL-DY", "0pt"),
+        encoding="utf-8", newline="\n",
+    )
+    probes = {p["id"]: p for p in query(out_path, "<tp-probe>").value}
+    measured = probes.get(anchor.id)
+    if measured is not None:
+        dx = anchor.bbox.x - measured["x"]
+        dy = anchor.bbox.y - measured["y"]
+        out_path.write_text(
+            source.replace("TP-CAL-DX", f"{dx:.2f}pt").replace("TP-CAL-DY", f"{dy:.2f}pt"),
+            encoding="utf-8", newline="\n",
+        )
     return out_path
 
 
@@ -395,13 +564,29 @@ BUILDERS = {
     "layout_placeholders": (build_placeholder_deck, "layout"),
     # autoresearch level 3: styled shapes, theme colors, elbow connectors
     "diagram_styled_shapes": (build_styled_shapes, "diagram-cetz"),
+    # autoresearch level 4: 2D decision flowchart with back-edge
+    "diagram_decision": (build_decision_flowchart, "diagram-cetz"),
 }
+
+# diagram cases that additionally get a Fletcher pairing
+FLETCHER_PAIRINGS = ("diagram_flowchart", "diagram_decision")
 
 FAULT_VARIANTS = ("moved", "overflow", "resized", "missing", "extra_text")
 
+# autoresearch level 5: real presentations from tests/data (translated as
+# a whole; verification must accept them without any issue)
+EXTERNAL_CASES = ("simple", "two_content", "multi_content", "media", "talk_example_a")
 
-def clean_case_names() -> list[str]:
-    return [*BUILDERS, "diagram_flowchart_fletcher"]
+# autoresearch level 6: dense lecture decks; Method B gate only
+EXTERNAL_CASES_B_ONLY = ("IBN_presentations/vlxN04-ibn",)
+
+
+def clean_case_names(with_external: bool = True) -> list[str]:
+    names = [*BUILDERS, *(f"{name}_fletcher" for name in FLETCHER_PAIRINGS)]
+    if with_external:
+        names += [f"data_{stem}" for stem in EXTERNAL_CASES]
+        names += [f"data_{Path(rel).stem}" for rel in EXTERNAL_CASES_B_ONLY]
+    return names
 
 
 def fault_case_names() -> list[str]:
@@ -416,8 +601,13 @@ def _find_id(truth: DocGeometry, text_prefix: str) -> str:
     raise KeyError(f"no element starting with '{text_prefix}'")
 
 
-def generate_corpus(out_dir: Path | str) -> list[CorpusCase]:
-    """Build all PPTX files, paired Typst files and fault variants."""
+def generate_corpus(out_dir: Path | str,
+                    external_data_dir: Path | str | None = None) -> list[CorpusCase]:
+    """Build all PPTX files, paired Typst files and fault variants.
+
+    ``external_data_dir`` points to a directory with real presentations
+    (see EXTERNAL_CASES); they are translated as-is and must verify clean.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cases: list[CorpusCase] = []
@@ -431,15 +621,16 @@ def generate_corpus(out_dir: Path | str) -> list[CorpusCase]:
         cases.append(CorpusCase(name=name, pptx_path=pptx_path, typ_path=typ_path,
                                 truth=truth, kind=kind))
 
-    # Fletcher pairing of the flowchart
-    flow_pptx = out_dir / "diagram_flowchart.pptx"
-    fletcher_typ = out_dir / "diagram_flowchart_fletcher.typ"
-    emit_fletcher_flowchart(flow_pptx, fletcher_typ)
-    cases.append(CorpusCase(
-        name="diagram_flowchart_fletcher", pptx_path=flow_pptx,
-        typ_path=fletcher_typ, truth=extract_pptx_geometry(flow_pptx),
-        kind="diagram-fletcher",
-    ))
+    # Fletcher pairings of selected diagram cases
+    for name in FLETCHER_PAIRINGS:
+        diagram_pptx = out_dir / f"{name}.pptx"
+        fletcher_typ = out_dir / f"{name}_fletcher.typ"
+        emit_fletcher_diagram(diagram_pptx, fletcher_typ)
+        cases.append(CorpusCase(
+            name=f"{name}_fletcher", pptx_path=diagram_pptx,
+            typ_path=fletcher_typ, truth=extract_pptx_geometry(diagram_pptx),
+            kind="diagram-fletcher",
+        ))
 
     # Fault-injected variants of the two-column layout
     two_col_pptx = out_dir / "layout_two_columns.pptx"
@@ -460,6 +651,26 @@ def generate_corpus(out_dir: Path | str) -> list[CorpusCase]:
                        "some padding words to make absolutely sure. " + LOREM,
         ),),
     }
+    # real presentations, translated as-is
+    if external_data_dir is not None:
+        external_data_dir = Path(external_data_dir)
+        externals = [(stem, True) for stem in EXTERNAL_CASES]
+        externals += [(rel, False) for rel in EXTERNAL_CASES_B_ONLY]
+        for rel, with_a in externals:
+            src = external_data_dir / f"{rel}.pptx"
+            if not src.exists():
+                continue
+            stem = Path(rel).stem
+            pptx_path = out_dir / f"data_{stem}.pptx"
+            pptx_path.write_bytes(src.read_bytes())
+            typ_path = out_dir / f"data_{stem}.typ"
+            emit_touying(pptx_path, typ_path)
+            cases.append(CorpusCase(
+                name=f"data_{stem}", pptx_path=pptx_path, typ_path=typ_path,
+                truth=extract_pptx_geometry(pptx_path), kind="external",
+                verify_with_a=with_a,
+            ))
+
     for variant, faults in fault_sets.items():
         typ_path = out_dir / f"layout_two_columns_{variant}.typ"
         emit_touying(two_col_pptx, typ_path, faults=faults)

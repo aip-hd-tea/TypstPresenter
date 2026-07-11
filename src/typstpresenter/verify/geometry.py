@@ -21,6 +21,7 @@ class ElementKind(StrEnum):
     IMAGE = "image"
     SHAPE = "shape"       # autoshape (rect, ellipse, ...)
     CONNECTOR = "connector"
+    TABLE = "table"
     GROUP = "group"
     DRAWING = "drawing"   # vector path extracted from a PDF
     OTHER = "other"

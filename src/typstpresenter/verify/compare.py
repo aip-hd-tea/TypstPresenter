@@ -77,6 +77,9 @@ class VerificationReport:
     source_truth: str
     source_typst: str
     issues: list[Issue] = field(default_factory=list)
+    # findings that exist in the source presentation as well (e.g. text that
+    # already overflows its box in PowerPoint): reported, but not errors
+    warnings: list[Issue] = field(default_factory=list)
     matches: list[MatchedPair] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
 
@@ -91,9 +94,11 @@ class VerificationReport:
         lines = [
             f"truth: {self.source_truth}",
             f"typst: {self.source_typst}",
-            f"matched elements: {len(self.matches)}, issues: {len(self.issues)}",
+            f"matched elements: {len(self.matches)}, issues: {len(self.issues)}, "
+            f"warnings: {len(self.warnings)}",
         ]
         lines += [f"  {issue}" for issue in self.issues]
+        lines += [f"  (warning) {issue}" for issue in self.warnings]
         if self.timings:
             timing = ", ".join(f"{k}={v:.3f}s" for k, v in self.timings.items())
             lines.append(f"timings: {timing}")
@@ -193,11 +198,24 @@ def compare_by_id(
         _check_geometry(pair, tol, report.issues)
         overflow_pt = (overflows or {}).get(truth_el.id, 0.0)
         if overflow_pt > tol.overflow_pt:
-            report.issues.append(Issue(
+            issue = Issue(
                 kind="overflow", slide=slide_index, element_id=truth_el.id,
                 detail=f"content exceeds box by {overflow_pt:.1f}pt vertically",
                 magnitude_pt=overflow_pt,
-            ))
+            )
+            # If the measured content would not even fit the *source* box,
+            # the overflow already exists in PowerPoint (which only shrinks
+            # text when autofit is on) -- report it as a warning, not as a
+            # translation error.
+            content_h = found_el.meta.get("content_h", 0.0)
+            source_overflows = content_h > truth_el.bbox.h + tol.overflow_pt
+            # "shrink" boxes are fitted by PowerPoint (and by our autofit
+            # calibration), so overflow there is always a translation error;
+            # "none"/"resize" boxes overflow in PowerPoint just the same
+            if source_overflows and truth_el.meta.get("autofit", "none") != "shrink":
+                report.warnings.append(issue)
+            else:
+                report.issues.append(issue)
 
     for slide_index, found_el in found.all_elements():
         if found_el.id not in truth_ids:
@@ -277,16 +295,21 @@ def _match_text(truth_slide, found_slide, tol: Tolerances, report: VerificationR
 
     assigned: dict[int, list[ElementGeometry]] = {i: [] for i in range(len(truth_texts))}
     for line in pdf_lines:
-        best_index, best_score = None, 0.0
+        # rank by similarity; ties (e.g. a short table cell whose text also
+        # occurs in a long body paragraph) are broken by geometric
+        # containment first, then proximity
+        best_index, best_key = None, None
         for i, truth_el in enumerate(truth_texts):
             score = _text_similarity(line.text, truth_el.text)
-            if score > best_score or (
-                score == best_score and best_index is not None and score > 0
-                and truth_el.bbox.center_distance(line.bbox)
-                < truth_texts[best_index].bbox.center_distance(line.bbox)
-            ):
-                best_index, best_score = i, score
-        if best_index is not None and best_score >= tol.text_similarity:
+            if score <= 0.0:
+                continue
+            lx, ly = line.bbox.center
+            inside = (truth_el.bbox.x <= lx <= truth_el.bbox.x2
+                      and truth_el.bbox.y <= ly <= truth_el.bbox.y2)
+            key = (round(score, 3), inside, -truth_el.bbox.center_distance(line.bbox))
+            if best_key is None or key > best_key:
+                best_index, best_key = i, key
+        if best_index is not None and best_key[0] >= tol.text_similarity:
             assigned[best_index].append(line)
         else:
             report.issues.append(Issue(
@@ -321,13 +344,20 @@ def _match_text(truth_slide, found_slide, tol: Tolerances, report: VerificationR
         if not _bbox_contains(truth_el.bbox, union, slack):
             below = union.y2 - truth_el.bbox.y2
             kind = "overflow" if below > slack and union.y >= truth_el.bbox.y - slack else "moved"
-            report.issues.append(Issue(
+            issue = Issue(
                 kind=kind, slide=truth_slide.index, element_id=truth_el.id,
                 detail=f"text ink ({union.x:.0f}, {union.y:.0f}, {union.w:.0f}x{union.h:.0f})pt "
                        f"escapes box ({truth_el.bbox.x:.0f}, {truth_el.bbox.y:.0f}, "
                        f"{truth_el.bbox.w:.0f}x{truth_el.bbox.h:.0f})pt",
                 magnitude_pt=max(below, 0.0),
-            ))
+            )
+            # without shrink-autofit, PowerPoint would overflow this box just
+            # the same; ink alone cannot distinguish source from translation
+            # overflow, so treat it as a warning
+            if kind == "overflow" and truth_el.meta.get("autofit", "none") != "shrink":
+                report.warnings.append(issue)
+            else:
+                report.issues.append(issue)
             continue
         # Inside a (possibly much larger) box, gross shifts of top-left
         # aligned text are still detectable via the ink anchor. Centered or
@@ -362,6 +392,10 @@ def _match_by_overlap(truth_slide, found_slide, truth_kind: ElementKind,
 
     used = set() if used is None else used
     for truth_el in truth_els:
+        if truth_el.meta.get("invisible"):
+            continue  # no fill, no outline -> nothing to find in the PDF
+        if truth_el.meta.get("unrenderable"):
+            continue  # image format typst cannot render (placeholder emitted)
         best_index, best_iou = None, 0.0
         for j, cand in enumerate(candidates):
             if j in used:

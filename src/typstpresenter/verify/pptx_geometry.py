@@ -31,16 +31,22 @@ def _kind_of(shape) -> ElementKind:
         return ElementKind.IMAGE
     if st == MSO_SHAPE_TYPE.GROUP:
         return ElementKind.GROUP
-    if st in (MSO_SHAPE_TYPE.AUTO_SHAPE,):
+    if st in (MSO_SHAPE_TYPE.AUTO_SHAPE, MSO_SHAPE_TYPE.FREEFORM):
         return ElementKind.SHAPE
     if st in (MSO_SHAPE_TYPE.LINE,) or shape.shape_type is None and shape.element.tag.endswith("cxnSp"):
         return ElementKind.CONNECTOR
+    if getattr(shape, "has_table", False):
+        return ElementKind.TABLE
     if shape.has_text_frame:
         return ElementKind.TEXT
     return ElementKind.OTHER
 
 
 def _shape_text(shape) -> str:
+    if getattr(shape, "has_table", False):
+        return "\n".join(
+            cell.text.strip() for row in shape.table.rows for cell in row.cells
+        ).strip()
     if not shape.has_text_frame:
         return ""
     return "\n".join(p.text for p in shape.text_frame.paragraphs).strip()
@@ -61,6 +67,12 @@ def _is_left_top_aligned(shape) -> bool:
     )
 
 
+def _autofit_of(shape) -> str:
+    from typstpresenter.verify.pptx_inherit import resolve_autofit
+
+    return resolve_autofit(shape)
+
+
 def _bbox_of(shape) -> BBox | None:
     if shape.left is None or shape.top is None:
         return None
@@ -70,6 +82,63 @@ def _bbox_of(shape) -> BBox | None:
         w=(shape.width or 0) / EMU_PER_PT,
         h=(shape.height or 0) / EMU_PER_PT,
     )
+
+
+# --------------------------------------------------------- group flattening --
+
+# Affine per-axis transform (sx, sy, tx, ty) mapping child EMU coordinates
+# to absolute EMU: abs = (x * sx + tx, y * sy + ty).
+_IDENTITY = (1.0, 1.0, 0.0, 0.0)
+
+
+def _group_child_transform(group, outer=_IDENTITY):
+    """Compose the group's child coordinate mapping with an outer transform.
+
+    Children of a group live in their own coordinate space defined by
+    a:chOff/a:chExt and are scaled into the group's a:off/a:ext.
+    """
+    from pptx.oxml.ns import qn
+
+    grp_sp_pr = group.element.find(qn("p:grpSpPr"))
+    xfrm = grp_sp_pr.find(qn("a:xfrm")) if grp_sp_pr is not None else None
+    if xfrm is None or shape_off_missing(group):
+        return outer
+    ch_off = xfrm.find(qn("a:chOff"))
+    ch_ext = xfrm.find(qn("a:chExt"))
+    ox, oy = group.left, group.top
+    ew, eh = group.width or 0, group.height or 0
+    cx0 = int(ch_off.get("x")) if ch_off is not None else 0
+    cy0 = int(ch_off.get("y")) if ch_off is not None else 0
+    cw = int(ch_ext.get("cx")) if ch_ext is not None else ew
+    ch = int(ch_ext.get("cy")) if ch_ext is not None else eh
+    sxl = ew / cw if cw else 1.0
+    syl = eh / ch if ch else 1.0
+    txl = ox - cx0 * sxl
+    tyl = oy - cy0 * syl
+    sx, sy, tx, ty = outer
+    return (sx * sxl, sy * syl, sx * txl + tx, sy * tyl + ty)
+
+
+def shape_off_missing(shape) -> bool:
+    return shape.left is None or shape.top is None
+
+
+def iter_flat_shapes(shapes, transform=_IDENTITY):
+    """Yield (shape, absolute BBox in pt) with groups flattened recursively."""
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            child_transform = _group_child_transform(shape, transform)
+            yield from iter_flat_shapes(shape.shapes, child_transform)
+            continue
+        if shape_off_missing(shape):
+            continue
+        sx, sy, tx, ty = transform
+        yield shape, BBox(
+            x=(shape.left * sx + tx) / EMU_PER_PT,
+            y=(shape.top * sy + ty) / EMU_PER_PT,
+            w=((shape.width or 0) * sx) / EMU_PER_PT,
+            h=((shape.height or 0) * sy) / EMU_PER_PT,
+        )
 
 
 def extract_pptx_geometry(path: Path | str) -> DocGeometry:
@@ -87,25 +156,40 @@ def extract_pptx_geometry(path: Path | str) -> DocGeometry:
     doc = DocGeometry(source=str(path))
     for slide_index, slide in enumerate(prs.slides):
         sg = SlideGeometry(index=slide_index, width=slide_w, height=slide_h)
-        for shape in slide.shapes:
-            bbox = _bbox_of(shape)
-            if bbox is None:
-                continue
+        for shape, bbox in iter_flat_shapes(slide.shapes):
             kind = _kind_of(shape)
             text = _shape_text(shape)
-            # Empty text boxes carry no visual content to verify.
-            if kind == ElementKind.TEXT and not text:
+            # Empty text boxes / empty placeholders render nothing.
+            if kind in (ElementKind.TEXT, ElementKind.OTHER) and not text:
                 continue
+            meta = {
+                "shape_name": shape.name,
+                "align_left_top": _is_left_top_aligned(shape),
+                "autofit": _autofit_of(shape),
+            }
+            if kind == ElementKind.IMAGE:
+                ext = shape.image.ext.lower()
+                # typst cannot render these; the emitter converts or draws a
+                # placeholder, so Method A must not require image ink
+                meta["unrenderable"] = ext not in (
+                    "png", "jpg", "jpeg", "gif", "svg", "webp")
+            if kind == ElementKind.SHAPE:
+                # shapes without fill and outline leave no ink; only their
+                # text (if any) is visually verifiable
+                from typstpresenter.verify.pptx_style import (
+                    shape_fill_rgb,
+                    shape_line_rgb,
+                )
+                meta["invisible"] = (
+                    shape_fill_rgb(shape) is None and shape_line_rgb(shape) is None
+                )
             sg.elements.append(
                 ElementGeometry(
                     kind=kind,
                     bbox=bbox,
                     id=element_id(slide_index, shape.shape_id),
                     text=text,
-                    meta={
-                        "shape_name": shape.name,
-                        "align_left_top": _is_left_top_aligned(shape),
-                    },
+                    meta=meta,
                 )
             )
         doc.slides.append(sg)

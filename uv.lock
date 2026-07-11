@@ -536,6 +536,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
+    { name = "pillow" },
     { name = "pymupdf" },
     { name = "python-pptx" },
     { name = "typer" },
@@ -551,6 +552,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
+    { name = "pillow", specifier = ">=10" },
     { name = "pymupdf", specifier = ">=1.27" },
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "typer", specifier = ">=0.24.1" },
