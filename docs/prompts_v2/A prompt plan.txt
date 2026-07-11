@@ -1,0 +1,16 @@
+Ich möchte ein Projekt entwickeln, in dem PowerPoint-Präsentationen als auch einzelne Diagramme in PowerPoint zu typst (https://typst.app/universe) übersetzt werden. Als typst-package für Präsentationen wird Touying verwendet (https://typst.app/universe/package/touying), für Diagramme die packages CeTZ und Fletcher.
+Der Code für die Übersetzung soll kein maschinelles Lernen verwenden, zumindest in der ersten Version. Der generierte Code in Types soll einfach sein, auf jeden Fall für Menschen editierbar.
+
+Für den Start brauche ich Tools/Routinen, die die Genauigkeit der Übersetzung zwischen PowerPoint und Typst überprüfen. Dabei soll überprüft werden, ob das Ergebnis in Typst keine Probleme enthält, zum Beispiel  Text, der aus einer Box herauskommt oder falsche Proportionen oder falsche Platzierung im Vergleich zu PowerPoint. Dazu muss eine sehr exakte Überprüfung der Typst-seitigen Präsentationen möglich sein. Diese Tools/Routinen werden für häufige Tests/Evaluationen verwendet, sodass spätere Entwicklung des Projektes teilweise als eine automatische "Autoresearch Loop" stattfinden kann. Deswegen müssen diese Tests einerseits genau, aber zugleich relativ schnell sein.
+
+Versuche, diese Tests auf zweifache Art zu implementieren und dann vergleiche, welche Methode zuverlässiger beziehungsweise schneller ist. 
+A. Bei der Methode A wird der klassische Weg gewählt, das heißt, dass zuerst aus dem generierten Typst Code ein PDF erzeugt wird. Dann wird dieses PDF mit Standardtools für PDF und Bilderkennung verarbeitet, um die Positionierung der einzelnen Elemente zu finden und einen Vergleich mit den Original PowerPoint-Präsentation zu machen. 
+B. Bei dem zweiten Ansatz wird Typst Introspection (https://typst.app/docs/reference/introspection/) verwendet, falls möglich. Hier werden eventuell der Typst Quelltext des aktuell behandelten Dokumentes modifiziert, sodass man direkt in Typst die Position einzelner Elemente ablesen kann. Untersuche für B, ob dieser Ansatz für solche Zwecke vernünftig funktionieren kann. Eventuell inspiziere auch den Code von Packages, die solche Funktionalität der Introspection möglicherweise verwenden.
+
+
+Um diese Tools / Routinen zu testen erzeuge einige Testfälle. Diese sollten abdecken: 
+(i) einfache Präsentationen mit diversen Layouts in PowerPoint, zum Beispiel Titel plus Inhalt oder Titel plus zwei Spalten.
+(ii) Testfälle für die Übersetzung von Diagrammen aus PowerPoint zu CeTZ und Fletcher.
+(iii) Vergleiche der Genauigkeit zwischen Lösung A und Lösung B oben.
+
+Der Code der Repository, in dem du dich befindest, enthält bereits einen früheren Versuch, dieses Problem zu bewerkstelligen. Möglicherweise sind Teile davon für dieses Projekt nützlich, aber du musst sie nicht verwenden, falls nicht sinnvoll. Am besten starte mit einem neuen Branch "ae/restart, check sie aus und arbeite auf ihr.

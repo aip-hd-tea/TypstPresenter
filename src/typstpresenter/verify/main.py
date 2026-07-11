@@ -92,6 +92,11 @@ def showcase(
             slide0 = truth.slides[0]
             result = run_method_b(typ_path, slide0.width, slide0.height)
             report = compare_by_id(truth, result.geometry, overflows=result.overflows)
+            
+            if emit:
+                emit_touying(pptx_path, typ_path, minimal=True)
+                compile_pdf(typ_path)
+
             typer.echo(f"{typ_path.stem:<50} pdf ok  B: {len(report.issues)} issues, "
                        f"{len(report.warnings)} warnings")
         except TypstError as error:

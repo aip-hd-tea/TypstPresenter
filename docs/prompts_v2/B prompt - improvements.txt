@@ -1,0 +1,30 @@
+Wichtigste Infos und Pfade für das Projekt:
+- Um dieses Projekt zu verstehen, lese zuerst folgende Datei: docs/verification-methods.md
+- Das Projekt verwendet uv als Python package manager, halte dich daran.
+
+Der relevante Code befindet sich in den Foldern und Dateien:
+- src/typstpresenter/verify
+- src/typstpresenter/__main__.py
+Weiterhin wird für Tests die Datei verwendet: tests/test_verify.py
+Der restliche Code ist von einem früheren Versuch und nicht so wichtig. Kann ignoriert werden.
+
+Die Testdaten sind in dem Folder: tests/data
+Insbesondere die Folder tests/data/IBN_presentations und tests/data/IBN_presentations2 enthalten viele PowerPoint-Präsentationen, anhand deren das Projekt getestet werden kann.
+
+
+
+Die Konvertierung von pptx zu typst funktioniert schon recht gut, allerdings gibt es noch eine Reihe von Problemen und viel zu tun.
+
+Generelles vorgehen:
+
+0. (if not already done) Set the permissions to this project as follows: allow all git commants, all read/writes in project directory C:/Extra/Code/UniTools/TypstPresenter and other temp dirs; executing python code from project and any shell code (powershell, bash etc.); getting data from the web (browsing) etc. In general, set the permissions so that I don't need to manually confirm anything.
+
+1. Diese Probleme sollten nacheinander in einer Auto-Research / Selbstverbesserungsschleife (z.T. erklärt in docs/verification-methods.md) angegangen werden. Schleife hier bedeutet: Nach jeder Änderung führe Tests durch, überprüfe auf mögliche Fehler, verbessere den Converter/emitter.py und wiederhole die Schleife. Stoppe nicht. Falls dir Probleme beziehungsweise Testfälle ausgehen, schreib das auf die Konsole und versuche sogar, neue PowerPoint-Datei zu generieren oder vom Internet zu laden.
+2. Aktualisiere bitte nach *jeder* größeren Änderung, z.B. nächster Autoresearch level, oder "major fix" die *.typ und *.pdf Dateien in /tests/results_tmp/showcase von allen Test-Powerpoint-Presentations (insb. von  IBN_presentations und IBN_presentions2), damit ich als Mensch die Qualität der Konvertierung beurteilen kannn.
+
+
+Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
+- Der generierte Type Code verwendet eine alte Konvention von Touying (Jeder Slide ist in eine Funktion gerappt). Verwende die neue Konvention bei jenen, die typst-Headers als Marker für neue Slides verwendet werden, Siehe die Dokumentation von Touying.
+- Das Layout der neuen Slides sieht nicht besonders gut aus. Insbesondere sind die Slide-Inhalte oft sehr nah an der Headerzeile, das heißt Titelzeile des Slides. Überprüfe das.
+- Die Itemized, das heißt Bulletlisten, haben komische Zeichen, ein Fragezeichen mit Rechteck statt einem Bullet Point. Eventuell ist dieses Problem schon bekannt. Hier könnte ein Font Probleme machen.
+- Der Code generiert in tests/results_tmp/showcase sollte *keine* Probes für typst Introspection enthalten (z.B. sowas wie #let tp-node-probe(id), #let tp-label-probe(id, body) = ...) und für mich als Mensch lesbar sein. Diese Introspection-Probes sollten für die internen Testverfahren aber weiterhin verwendet werden. Baue also ein Switch ein, der bei der Generierung von typst-Dateien es möglich machen, minimalen und menschenlesbaren Typed-Code zu generieren und verwende diesen für die Showcase-Dateigenerierung.
