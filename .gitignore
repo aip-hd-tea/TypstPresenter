@@ -218,3 +218,7 @@ __marimo__/
 
 # generated verification corpus
 verify_corpus/
+
+# local lecture decks (not for the repo)
+tests/data/IBN_presentations/
+tests/data/IBN_presentations2/

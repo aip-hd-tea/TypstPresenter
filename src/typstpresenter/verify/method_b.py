@@ -59,6 +59,18 @@ PROBE_PRELUDE = """\
   let pos = here().position()
   [#metadata((id: id, page: pos.page, x: pos.x.pt(), y: pos.y.pt()))<tp-probe>]
 }
+
+#let tp-label-probe(id, body) = {
+  context {
+    let pos = here().position()
+    let size = measure(body)
+    [#metadata((
+      id: id, page: pos.page, x: pos.x.pt(), y: pos.y.pt(),
+      label-w: size.width.pt(), label-h: size.height.pt(),
+    ))<tp-probe>]
+  }
+  body
+}
 """
 
 PROBE_SELECTOR = "<tp-probe>"
@@ -100,13 +112,17 @@ def run_method_b(
     overflows: dict[str, float] = {}
     for probe in timed.value:
         sg = slide_for(probe["page"])
-        if "w" not in probe:  # node probe: position marker without box
+        if "w" not in probe:  # node/label probe: marker without designed box
+            meta = {"node_probe": True}
+            if "label-h" in probe:
+                meta["label_w"] = probe["label-w"]
+                meta["label_h"] = probe["label-h"]
             sg.elements.append(
                 ElementGeometry(
                     kind=ElementKind.SHAPE,
                     bbox=BBox(probe["x"], probe["y"], 0.0, 0.0),
                     id=probe["id"],
-                    meta={"node_probe": True},
+                    meta=meta,
                 )
             )
             continue

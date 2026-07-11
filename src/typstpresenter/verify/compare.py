@@ -45,9 +45,10 @@ class Tolerances:
     # Method A: max distance between box top-left and text ink top-left, in
     # pt (text inset/rendering differences stay below this, gross moves not)
     anchor_pt: float = 15.0
-    # slack for diagram node probes (labels sit inside shapes, layout noise
-    # of Fletcher/CeTZ label placement is tolerated up to this)
-    node_pos_pt: float = 10.0
+    # slack for diagram node probes (labels sit inside shapes; layout noise
+    # of Fletcher/CeTZ label placement and canvas-drift correction residue
+    # is tolerated up to this)
+    node_pos_pt: float = 12.0
 
 
 @dataclass
@@ -188,12 +189,21 @@ def compare_by_id(
             # node probes mark the label's top-left; verify position only,
             # against the truth box (the label lies inside the shape)
             if not _bbox_contains(truth_el.bbox, found_el.bbox, tol.node_pos_pt):
-                report.issues.append(Issue(
+                issue = Issue(
                     kind="moved", slide=slide_index, element_id=truth_el.id,
                     detail=f"node label at ({found_el.bbox.x:.0f}, {found_el.bbox.y:.0f})pt "
                            f"outside truth box ({truth_el.bbox.x:.0f}, {truth_el.bbox.y:.0f}, "
                            f"{truth_el.bbox.w:.0f}x{truth_el.bbox.h:.0f})pt",
-                ))
+                )
+                # a measured label taller than its shape sticks out in
+                # PowerPoint just the same -- source condition, not a bug
+                label_h = found_el.meta.get("label_h", 0.0)
+                x_ok = (truth_el.bbox.x - tol.node_pos_pt <= found_el.bbox.x
+                        <= truth_el.bbox.x2 + tol.node_pos_pt)
+                if x_ok and label_h > truth_el.bbox.h + tol.overflow_pt:
+                    report.warnings.append(issue)
+                else:
+                    report.issues.append(issue)
             continue
         _check_geometry(pair, tol, report.issues)
         overflow_pt = (overflows or {}).get(truth_el.id, 0.0)

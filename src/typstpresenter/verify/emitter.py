@@ -238,7 +238,13 @@ def _emit_text_body(shape, default_size: float, extra_text: str,
         spc_bef = resolve_space_before(paragraph, shape)
         if spc_bef and not first_paragraph:
             kind, value = spc_bef
-            gap = value * PPT_LINE_PITCH_EM * para_size if kind == "pct" else value
+            if kind == "pct":
+                gap = value * PPT_LINE_PITCH_EM * para_size  # para_size is scaled
+            else:
+                # PowerPoint's autofit scales point-based paragraph spacing
+                # along with the text; without this, many-paragraph bodies
+                # keep a fixed spacing floor and shrink cannot converge
+                gap = value * font_scale * (1.0 - lnspc_red)
             parts.append(f"#v({gap:.2f}pt)")
         prefix = ""
         indent = paragraph.level * 18.0
@@ -351,19 +357,39 @@ def _cetz_style_args(shape) -> str:
     return f"{fill_arg}, {stroke_arg}"
 
 
-def _cetz_label_markup(shape, eid: str, probes: bool, default_size: float) -> str:
-    """Shape label content (multi-paragraph, styled, with node probe)."""
+def _cetz_label_markup(shape, eid: str, probes: bool, default_size: float,
+                       label_w: float) -> str:
+    """Shape label as width-constrained box (multi-paragraph, styled, probed)."""
     parts = []
     if shape.has_text_frame:
         # shape text defaults to the style's font color (often white)
         font_rgb = shape_font_rgb(shape)
+        font_scale, lnspc_red = _autofit_scales(shape)
         for paragraph in shape.text_frame.paragraphs:
             runs = _paragraph_runs_markup(paragraph, shape, default_size,
+                                          scale=font_scale,
                                           default_color=font_rgb)
             if runs:
                 parts.append(f"#par[{''.join(runs)}]")
-    marker = f'#tp-node-probe("{eid}")' if probes else ""
-    return marker + "".join(parts)
+        if parts:
+            # PowerPoint line metrics, as in _emit_text_body: without this,
+            # multi-paragraph labels get typst's default paragraph spacing
+            # and grow far taller than the shape
+            leading = max(
+                PPT_LINE_PITCH_EM * (1.0 - lnspc_red) - TYPST_LINE_HEIGHT_EM, 0.1
+            )
+            parts.insert(
+                0, f"#set par(leading: {leading:.3f}em, spacing: {leading:.3f}em);"
+            )
+    content = "".join(parts)
+    boxed = f"box(width: {label_w:.2f}pt, align(center)[{content}])" if content else ""
+    if not probes:
+        return f"#{boxed}" if boxed else ""
+    if boxed:
+        # label probe measures the constrained label so overflow beyond the
+        # shape can be classified as a source condition, not a translation bug
+        return f'#tp-label-probe("{eid}", {boxed})'
+    return f'#tp-node-probe("{eid}")'
 
 
 def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
@@ -392,7 +418,7 @@ def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
         lines.append(f"    line({points}, mark: (end: \">\"), {stroke})")
         if probes:
             lines.append(f'    content(({cx:.2f}, {-cy:.2f}), [#tp-node-probe("{eid}")])')
-        return "\n".join(lines)
+        return "\n".join(lines), None
 
     auto = None
     try:
@@ -421,29 +447,32 @@ def _emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
             f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
             f"radius: {radius:g}, {style})"
         )
-    label = _cetz_label_markup(shape, eid, probes, default_size)
+    # constrain the label to the shape width so long text wraps like
+    # PowerPoint instead of spreading beyond the shape
+    label_w = max(bbox.w - 7.2, 7.2)
+    label = _cetz_label_markup(shape, eid, probes, default_size, label_w)
+    expectation = None
     if label:
         from pptx.enum.text import MSO_ANCHOR
 
-        # constrain the label to the shape width so long text wraps like
-        # PowerPoint instead of spreading beyond the shape
-        label_w = max(bbox.w - 7.2, 7.2)
-        boxed = f"box(width: {label_w:.2f}pt, align(center)[{label}])"
         # respect the text frame's vertical anchor: top/bottom-anchored
         # panels must not be centered (their text grows from the edge).
         # The OOXML default when no anchor is set anywhere is "t" (top).
         anchor = resolve_anchor(shape) if shape.has_text_frame else None
-        if anchor is None or anchor == MSO_ANCHOR.TOP:
+        if anchor == MSO_ANCHOR.BOTTOM:
             lines.append(
-                f'    content(({cx:.2f}, {y1 - 3.6:.2f}), anchor: "north", {boxed})'
+                f'    content(({cx:.2f}, {y2 + 3.6:.2f}), anchor: "south", [{label}])'
             )
-        elif anchor == MSO_ANCHOR.BOTTOM:
+            expectation = (cx, bbox.y2 - 3.6, "south")
+        elif anchor == MSO_ANCHOR.MIDDLE:
+            lines.append(f"    content(({cx:.2f}, {-cy:.2f}), [{label}])")
+            expectation = (cx, cy, "center")
+        else:  # OOXML default: top
             lines.append(
-                f'    content(({cx:.2f}, {y2 + 3.6:.2f}), anchor: "south", {boxed})'
+                f'    content(({cx:.2f}, {y1 - 3.6:.2f}), anchor: "north", [{label}])'
             )
-        else:
-            lines.append(f"    content(({cx:.2f}, {-cy:.2f}), {boxed})")
-    return "\n".join(lines)
+            expectation = (cx, bbox.y + 3.6, "north")
+    return "\n".join(lines), expectation
 
 
 def emit_touying(
@@ -491,12 +520,19 @@ def emit_touying(
     # elements whose bodyPr requests shrink-on-overflow; PowerPoint computes
     # the actual fontScale at edit time, so we must derive it ourselves
     autofit_ids: set[str] = set()
+    # label probe id -> (slide, expected label center x, expected anchor y,
+    # anchor kind); used to measure and correct per-slide canvas drift
+    label_expect: dict[str, tuple] = {}
 
-    def build_body(shrink: dict[str, float]) -> list[str]:
+    def build_body(shrink: dict[str, float],
+                   canvas_adjust: dict[int, tuple[float, float]]) -> list[str]:
         body: list[str] = []
         for slide_index, slide in enumerate(prs.slides):
             body.append("#slide[")
             cetz_lines: list[str] = []
+            # shapes parked outside the slide inflate the canvas bounds and
+            # would shift the whole canvas; track the overhang to compensate
+            overhang_left = overhang_top = 0.0
             for shape, bbox in iter_flat_shapes(slide.shapes):
                 eid = element_id(slide_index, shape.shape_id)
                 fault = faults_by_id.get(eid)
@@ -510,7 +546,12 @@ def emit_touying(
                     )
 
                 if _is_diagram_shape(shape):
-                    cetz_lines.append(_emit_cetz_shape(shape, eid, bbox, probes))
+                    markup, expectation = _emit_cetz_shape(shape, eid, bbox, probes)
+                    cetz_lines.append(markup)
+                    if expectation is not None:
+                        label_expect[eid] = (slide_index, *expectation)
+                    overhang_left = min(overhang_left, bbox.x)
+                    overhang_top = min(overhang_top, bbox.y)
                     continue
 
                 if getattr(shape, "has_table", False):
@@ -539,7 +580,11 @@ def emit_touying(
                     )
 
             if cetz_lines:
-                body.append("  #place(top + left, cetz.canvas(length: 1pt, {")
+                adjust_x, adjust_y = canvas_adjust.get(slide_index, (0.0, 0.0))
+                body.append(
+                    f"  #place(top + left, dx: {overhang_left + adjust_x:.2f}pt, "
+                    f"dy: {overhang_top + adjust_y:.2f}pt, cetz.canvas(length: 1pt, {{"
+                )
                 body.append("    import cetz.draw: *")
                 body.append("    set-style(stroke: 0.75pt)")
                 # invisible full-page rect anchors the canvas at the page
@@ -551,30 +596,65 @@ def emit_touying(
             body.append("")
         return body
 
-    def write(shrink: dict[str, float]) -> None:
-        out_path.write_text("\n".join(header + build_body(shrink)),
-                            encoding="utf-8", newline="\n")
+    shrink: dict[str, float] = {}
+    canvas_adjust: dict[int, tuple[float, float]] = {}
 
-    write({})
+    def write() -> None:
+        out_path.write_text(
+            "\n".join(header + build_body(shrink, canvas_adjust)),
+            encoding="utf-8", newline="\n",
+        )
 
-    # Autofit calibration: like PowerPoint at edit time, measure the laid-out
-    # content (via the probes) and shrink autofit text until it fits its box.
-    if probes and autofit_ids:
+    write()
+
+    # Calibration: like PowerPoint at edit time, measure the laid-out content
+    # via the probes and (a) shrink autofit text until it fits its box,
+    # (b) correct per-slide canvas drift caused by labels or shapes whose
+    # ink extends beyond the page (cetz sizes the canvas to its content).
+    if probes and (autofit_ids or label_expect):
         from typstpresenter.verify.typst_tools import query
 
-        shrink: dict[str, float] = {}
-        for _ in range(4):
+        for _ in range(8):
             measured = query(out_path, "<tp-probe>").value
+
             needed = {
                 p["id"]: p["h"] / p["content-h"]
                 for p in measured
                 if "w" in p and p["id"] in autofit_ids
                 and p["content-h"] > p["h"] + 0.5
             }
-            if not needed:
-                break
             for eid, ratio in needed.items():
-                shrink[eid] = shrink.get(eid, 1.0) * min(ratio, 0.97)
-            write(shrink)
+                # extra 3% margin compounds across rounds, absorbing the
+                # sub-linear response of reflowing text
+                shrink[eid] = shrink.get(eid, 1.0) * ratio * 0.97
+
+            drift: dict[int, list[tuple[float, float]]] = {}
+            for p in measured:
+                expect = label_expect.get(p["id"])
+                if expect is None or "label-h" not in p:
+                    continue
+                slide_index, expect_cx, expect_y, kind = expect
+                measured_cx = p["x"] + p["label-w"] / 2
+                if kind == "north":
+                    measured_y = p["y"]
+                elif kind == "south":
+                    measured_y = p["y"] + p["label-h"]
+                else:
+                    measured_y = p["y"] + p["label-h"] / 2
+                drift.setdefault(slide_index, []).append(
+                    (measured_cx - expect_cx, measured_y - expect_y))
+            adjusted = False
+            for slide_index, deltas in drift.items():
+                dxs = sorted(d[0] for d in deltas)
+                dys = sorted(d[1] for d in deltas)
+                dx, dy = dxs[len(dxs) // 2], dys[len(dys) // 2]
+                if abs(dx) > 0.5 or abs(dy) > 0.5:
+                    prev = canvas_adjust.get(slide_index, (0.0, 0.0))
+                    canvas_adjust[slide_index] = (prev[0] - dx, prev[1] - dy)
+                    adjusted = True
+
+            if not needed and not adjusted:
+                break
+            write()
 
     return out_path

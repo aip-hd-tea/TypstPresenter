@@ -173,6 +173,20 @@ slides (~180 findings from heuristic matching noise) — dense decks are
 therefore gated by Method B only (`CorpusCase.verify_with_a = False`),
 another point for B as the primary gate.
 
+Continued iterations on all 26 IBN lecture decks added: full markup
+escaping (`//` comments, line-start markers), WMF→PNG conversion via
+Pillow with placeholder fallback, per-slide canvas drift calibration
+(labels/shapes reaching beyond the page inflate cetz's canvas bounds),
+scaling of point-based paragraph spacing under autofit (fixed `#v` floors
+otherwise block shrink convergence), and measured label probes
+(`tp-label-probe`) that classify labels taller than their shape as source
+conditions. Final state: **43 of 44 showcase decks verify with 0 Method-B
+issues** (1 known residual: vl06 slide 33, stale PowerPoint fontScale).
+`uv run typstpresenter showcase` regenerates .typ+PDF for all decks into
+`tests/results_tmp/showcase` for human review. Known visual gaps for the
+next levels: symbol-font runs (Wingdings bullets render as tofu), shape
+rotation is ignored, freeform geometry is approximated by its bbox.
+
 ## Known limitations / next steps
 
 - Ground truth uses the *declared* PPTX box; PowerPoint's own text

@@ -48,6 +48,59 @@ def verify(
 
 
 @app.command()
+def showcase(
+    data_dir: Annotated[Path, typer.Option("--data-dir",
+        help="Directory with test presentations")] = Path("tests/data"),
+    out_dir: Annotated[Path, typer.Option("--out-dir", "-o",
+        help="Where to put .typ and .pdf files")] = Path("tests/results_tmp/showcase"),
+) -> None:
+    """
+    Emit .typ and compiled PDF for every test presentation (tests/data plus
+    the IBN_presentations directories and the generated corpus cases), so a
+    human can judge conversion quality. Regenerate after every major change.
+    """
+    from typstpresenter.verify.compare import compare_by_id
+    from typstpresenter.verify.corpus import generate_corpus
+    from typstpresenter.verify.emitter import emit_touying
+    from typstpresenter.verify.method_b import run_method_b
+    from typstpresenter.verify.typst_tools import TypstError, compile_pdf
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sources = sorted(data_dir.glob("*.pptx"))
+    for sub in ("IBN_presentations", "IBN_presentations2"):
+        sources += sorted((data_dir / sub).glob("*.pptx"))
+
+    # generated corpus cases (clean ones) are part of the showcase too;
+    # generate_corpus has emitted their .typ already
+    corpus_cases = generate_corpus(out_dir / "corpus")
+    jobs = [(c.pptx_path, c.typ_path, False) for c in corpus_cases
+            if not c.expected_issues_b]
+
+    for src in sources:
+        pptx_path = out_dir / src.name
+        pptx_path.write_bytes(src.read_bytes())
+        jobs.append((pptx_path, pptx_path.with_suffix(".typ"), True))
+
+    failed = 0
+    for pptx_path, typ_path, emit in jobs:
+        try:
+            if emit:
+                emit_touying(pptx_path, typ_path)
+            compile_pdf(typ_path)
+            truth = extract_pptx_geometry(pptx_path)
+            slide0 = truth.slides[0]
+            result = run_method_b(typ_path, slide0.width, slide0.height)
+            report = compare_by_id(truth, result.geometry, overflows=result.overflows)
+            typer.echo(f"{typ_path.stem:<50} pdf ok  B: {len(report.issues)} issues, "
+                       f"{len(report.warnings)} warnings")
+        except TypstError as error:
+            failed += 1
+            typer.echo(f"{typ_path.stem:<50} FAILED: {str(error)[:160]}")
+    typer.echo(f"\n{len(jobs)} decks -> {out_dir} ({failed} failed)")
+
+
+@app.command()
 def benchmark(
     out_dir: Annotated[Path, typer.Option("--out-dir", "-o",
         help="Directory for the generated corpus")] = Path("verify_corpus"),
