@@ -25,9 +25,35 @@ def element_id(slide_index: int, shape_id: int) -> str:
     return f"s{slide_index}-e{shape_id}"
 
 
+def is_picture(shape) -> bool:
+    """True for any shape carrying an image.
+
+    Pictures inserted into a content placeholder keep shape_type
+    PLACEHOLDER, but their XML element is a ``p:pic`` like any picture.
+    Movies are ``p:pic`` too; they render as their poster frame.
+    """
+    from pptx.oxml.ns import qn
+
+    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+        return True
+    return shape.element.tag == qn("p:pic")
+
+
+def picture_image(shape):
+    """The Image part of a picture shape (a movie's poster frame), or None."""
+    try:
+        return shape.image
+    except (AttributeError, ValueError, KeyError):
+        pass
+    try:
+        return shape.poster_frame
+    except AttributeError:
+        return None
+
+
 def _kind_of(shape) -> ElementKind:
     st = shape.shape_type
-    if st == MSO_SHAPE_TYPE.PICTURE:
+    if is_picture(shape):
         return ElementKind.IMAGE
     if st == MSO_SHAPE_TYPE.GROUP:
         return ElementKind.GROUP
@@ -168,7 +194,8 @@ def extract_pptx_geometry(path: Path | str) -> DocGeometry:
                 "autofit": _autofit_of(shape),
             }
             if kind == ElementKind.IMAGE:
-                ext = shape.image.ext.lower()
+                image = picture_image(shape)
+                ext = image.ext.lower() if image is not None else ""
                 # typst cannot render these; the emitter converts or draws a
                 # placeholder, so Method A must not require image ink
                 meta["unrenderable"] = ext not in (

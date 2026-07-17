@@ -243,6 +243,64 @@ Result: **all 32 real decks (tests/data + IBN_presentations{,2}) emit,
 compile and pass Method S with 0 issues**; the emitted source contains
 zero `#place` calls (previously every text box was absolutely placed).
 
+## Method F: structural fidelity (added 2026-07-17, C-problems session)
+
+Method S only proves the flow output is *sane*; a slide can pass it while
+losing an image or rendering the title at half size (both observed on
+`talk_example_a.pptx`). **Method F** (`verify/method_f.py`, CLI
+`verify --method f`, showcase column `F:`) compares the PPTX source with
+the compiled PDF *structurally, with tolerances* — no pixel fidelity:
+
+- **Images**: every visible source picture (≥2000 pt², incl. pictures in
+  content placeholders and movie poster frames) must appear on its page;
+  matched greedily by center distance + scale. Rendered/source scale
+  <0.7 relative to the slide scale → issue; center drift >25 % of page
+  width / >32 % of height → issue (warn at 13 %/18 %).
+- **Title**: heading text must appear; rendered size ≥0.8× the resolved
+  source size (placeholder inheritance chain). `CENTER_TITLE` slides must
+  render the title centered (cx within 0.15 of center, cy in 0.18–0.7).
+- **Body text**: paragraphs matched into PDF spans (span must cover ≥25 %
+  of the paragraph, min 6 chars); rendered/expected < 0.55×slide-scale →
+  issue, <0.72 → warning.
+- **Slide scale**: flow calibration shrinks non-fitting slides uniformly,
+  which preserves relative layout — the per-element checks divide by the
+  slide's median rendered/source ratio, and heavy uniform shrink is
+  reported *once per slide* (<62 % issue, <82 % warning). Slides whose
+  source text box is itself overstuffed (estimated laid-out height >1.15×
+  its box) are downgraded to a warning — no layout can render them full
+  size.
+- **Hyperlinks**: every source URL must appear in the PDF's link
+  annotations (`#link(…)` emission in both flow and probed mode).
+
+The initial Method-F run against the then-current output flagged 18
+issues on `talk_example_a` alone (titles at 34 pt vs 44–60 pt source,
+missing placeholder pictures, a 61 %-size flower in the wrong column,
+lost hyperlink, left-aligned image pair). The fixes that got the corpus
+to zero:
+
+- `is_picture()` recognizes `p:pic` in content placeholders and movies
+  (poster frame) — previously silently dropped in flow mode,
+- `#title-slide[…]` for CENTER_TITLE layouts, `subslide-preamble` with
+  the deck's resolved title size (theme default was 1.2 em of body text),
+- hyperlink runs → `#link("url")[…]` (style tuple carries the address),
+- column grids: blocks within one column's x-range join that cell;
+  image-only rows become a centered `grid(columns: n)` with source
+  gutters; fixed-size canvases/pictures wider than their cell get
+  `#scale(…%, reflow: true)`; column slack is relative (12 % text/text,
+  30 % against diagram bounds),
+- image-on-image (inset/detail views) absorbs both into the canvas,
+- thin textless decoration canvases (braces, arrows) that would force
+  text columns to stack are dropped,
+- deliberate vertical whitespace survives as `#v(…pt)` (sparse slides),
+- ornaments in the title band (≤60 pt, e.g. bit.ly badges) are chrome,
+- calibration steps refined (×0.9 span 2 / ×0.72 span ≥3, ≤9 rounds) —
+  the old ×0.85/×0.7 overshot dense slides to ~60 % where ~75 % fits,
+- absorbed canvas text gets PPT line pitch (`leading: 0.59em`).
+
+`tests/test_fidelity.py` pins the contract (clean talk_example_a, the
+expected constructs, and that a doctored deck — dropped image, 20 pt
+headings — is flagged).
+
 ## Known limitations / next steps
 
 - Ground truth uses the *declared* PPTX box; PowerPoint's own text

@@ -24,7 +24,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pptx
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from typstpresenter.convert.cetz import emit_cetz_shape, is_diagram_shape
 from typstpresenter.convert.faults import Fault
@@ -34,7 +33,11 @@ from typstpresenter.convert.pptx_inherit import resolve_autofit
 from typstpresenter.convert.textbody import emit_text_body
 from typstpresenter.verify.geometry import EMU_PER_PT, BBox
 from typstpresenter.verify.method_b import PROBE_PRELUDE
-from typstpresenter.verify.pptx_geometry import element_id, iter_flat_shapes
+from typstpresenter.verify.pptx_geometry import (
+    element_id,
+    is_picture,
+    iter_flat_shapes,
+)
 
 TOUYING_VERSION = "0.6.1"
 CETZ_VERSION = "0.5.2"
@@ -146,7 +149,7 @@ def emit_touying(
 
                 if getattr(shape, "has_table", False):
                     content = emit_table(shape, default_font_size)
-                elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                elif is_picture(shape):
                     media_dir.mkdir(parents=True, exist_ok=True)
                     content = emit_picture(shape, eid, media_dir)
                 elif shape.has_text_frame and shape.text_frame.text.strip():
@@ -267,7 +270,14 @@ def emit_minimal(
     spanning several pages get a font scale below 1. The final document
     is written without markers.
     """
-    from typstpresenter.convert.flow import document_body_size, flow_slide_markup
+    from typstpresenter.convert.flow import (
+        PAGE_MARGIN_BOTTOM,
+        PAGE_MARGIN_TOP,
+        PAGE_MARGIN_X,
+        deck_title_size,
+        document_body_size,
+        flow_slide_markup,
+    )
     from typstpresenter.verify.typst_tools import TypstError, query
 
     pptx_path = Path(pptx_path)
@@ -277,6 +287,7 @@ def emit_minimal(
     page_h = prs.slide_height / EMU_PER_PT
     media_dir = out_path.parent / f"{out_path.stem}_media"
     doc_size = document_body_size(prs, default_font_size)
+    title_size = deck_title_size(prs)
     slide_count = len(prs.slides._sldIdLst)
 
     def write(scales: dict[int, float], markers: bool) -> None:
@@ -287,6 +298,7 @@ def emit_minimal(
                 default_font_size, doc_size,
                 scale=scales.get(slide_index, 1.0),
                 calibration_marker=markers,
+                heading_size=title_size,
             )
         if markers:
             # sentinel at document end: gives the last slide's page span
@@ -304,11 +316,23 @@ def emit_minimal(
             "",
             "#show: simple-theme.with(",
             f"  config-page(width: {page_w:g}pt, height: {page_h:g}pt,"
-            " margin: (x: 35pt, top: 30pt, bottom: 30pt)),",
+            f" margin: (x: {PAGE_MARGIN_X:g}pt, top: {PAGE_MARGIN_TOP:g}pt,"
+            f" bottom: {PAGE_MARGIN_BOTTOM:g}pt)),",
             "  config-common(handout: true),",
+        ]
+        if title_size is not None:
+            # slide headings at the deck's resolved title size (the theme
+            # default is a mere 1.2em of the body text)
+            header.append(
+                f"  subslide-preamble: block(below: 0.8em, "
+                f'text({title_size:g}pt, weight: "bold", '
+                "utils.display-current-heading(level: 2))),")
+        header += [
             ")",
             '#set text(font: ("Calibri", "Arial", "Liberation Sans"),'
             f" size: {doc_size:g}pt)",
+            # PPTX text is literal; PowerPoint does not substitute quotes
+            "#set smartquote(enabled: false)",
             "",
         ]
         out_path.write_text("\n".join(header) + "\n" + body_text,
@@ -316,7 +340,7 @@ def emit_minimal(
 
     scales: dict[int, float] = {}
     if calibrate:
-        for _ in range(6):
+        for _ in range(9):
             write(scales, markers=True)
             try:
                 marks = query(out_path, "metadata").value
@@ -341,7 +365,9 @@ def emit_minimal(
             changed = False
             for s, span in spans.items():
                 if span > 1:
-                    factor = 0.85 if span == 2 else 0.7
+                    # gentle steps: coarse factors overshoot and leave
+                    # slides much smaller than they need to be
+                    factor = 0.9 if span == 2 else 0.72
                     scales[s] = max(scales.get(s, 1.0) * factor, 0.4)
                     changed = True
             if not changed:

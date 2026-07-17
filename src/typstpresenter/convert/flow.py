@@ -17,8 +17,6 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-
 from typstpresenter.convert.cetz import emit_cetz_shape, is_diagram_shape
 from typstpresenter.convert.pptx_inherit import (
     resolve_bullet,
@@ -33,6 +31,11 @@ from typstpresenter.verify.geometry import EMU_PER_PT, BBox
 
 # Placeholder types that repeat on every slide (theme chrome, not content).
 _CHROME_PH_TYPES = {"SLIDE_NUMBER", "FOOTER", "DATE"}
+
+# Page margins of the emitted deck (shared with the emitter's config-page).
+PAGE_MARGIN_X = 30.0
+PAGE_MARGIN_TOP = 24.0
+PAGE_MARGIN_BOTTOM = 30.0
 
 # Characters that are markup-active *anywhere* in Typst markup mode. Unlike
 # the probed emitter we do not escape '-', '+', '=', '/' mid-line: readable
@@ -86,7 +89,16 @@ def _inline_chunk(text: str, style: tuple, context_size: float,
                   boundary_ok: bool) -> tuple[str, bool]:
     """Render one styled chunk; also report whether the result ends in a
     hash expression (whose parse would continue over a following '(' etc.)."""
-    size, bold, italic, underline, rgb = style
+    from typstpresenter.convert.textbody import typst_str
+
+    size, bold, italic, underline, rgb, link = style
+
+    def _linked(markup: str, ends_hash: bool) -> tuple[str, bool]:
+        if link:
+            return (f"#link({typst_str(link)})"
+                    f"[{guard_markup_start(markup)}]", True)
+        return markup, ends_hash
+
     inner = escape_flow(text).replace("\n", " \\ ")
     wrapped_hash = False
     if underline:
@@ -102,22 +114,23 @@ def _inline_chunk(text: str, style: tuple, context_size: float,
             args.append('weight: "bold"')
         if italic:
             args.append('style: "italic"')
-        return f"#text({', '.join(args)})[{guard_markup_start(inner)}]", True
+        return _linked(f"#text({', '.join(args)})[{guard_markup_start(inner)}]",
+                       True)
     # pure bold/italic can use native markup -- but only at word boundaries,
     # otherwise the delimiters do not trigger
     if bold and italic:
         if boundary_ok:
-            return f"*_{inner}_*", False
-        return f"#strong[#emph[{guard_markup_start(inner)}]]", True
+            return _linked(f"*_{inner}_*", False)
+        return _linked(f"#strong[#emph[{guard_markup_start(inner)}]]", True)
     if bold:
         if boundary_ok:
-            return f"*{inner}*", False
-        return f"#strong[{guard_markup_start(inner)}]", True
+            return _linked(f"*{inner}*", False)
+        return _linked(f"#strong[{guard_markup_start(inner)}]", True)
     if italic:
         if boundary_ok:
-            return f"_{inner}_", False
-        return f"#emph[{guard_markup_start(inner)}]", True
-    return inner, wrapped_hash
+            return _linked(f"_{inner}_", False)
+        return _linked(f"#emph[{guard_markup_start(inner)}]", True)
+    return _linked(inner, wrapped_hash)
 
 
 def _continues_code(text: str) -> bool:
@@ -220,7 +233,11 @@ _TYPST_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
 
 def _write_image_file(shape, eid: str, media_dir: Path) -> str | None:
     """Write the picture blob (converting if needed); returns the filename."""
-    image = shape.image
+    from typstpresenter.verify.pptx_geometry import picture_image
+
+    image = picture_image(shape)
+    if image is None:
+        return None
     ext = image.ext.lower()
     media_dir.mkdir(parents=True, exist_ok=True)
     if ext in _TYPST_IMAGE_EXTS:
@@ -248,6 +265,8 @@ def _render_picture(shape, eid: str, bbox: BBox, media_dir: Path,
     img = f'image("{media_dir.name}/{filename}", width: {bbox.w * scale:.0f}pt)'
     if abs(bbox.center[0] - page_w / 2) < page_w * 0.06:
         return f"#align(center, {img})"
+    if bbox.center[0] > page_w * 0.6:
+        return f"#align(right, {img})"
     return f"#{img}"
 
 
@@ -328,9 +347,13 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
         else:
             markup = _render_text_block(shape, default_size, context_size)
             if markup:
+                # absorbed text must stay inside its source box: match
+                # PowerPoint's line pitch instead of typst's airier default
                 lines.append(
                     f'  content(({x:.1f}, {-y:.1f}), anchor: "north-west", '
-                    f"box(width: {bbox.w:.1f}pt)[\n{markup}\n  ])")
+                    f"box(width: {bbox.w:.1f}pt)[\n"
+                    "#set par(leading: 0.59em, spacing: 0.59em)\n"
+                    f"{markup}\n  ])")
     lines.append("})")
     canvas = "\n".join(lines)
     if scale != 1.0:
@@ -343,13 +366,23 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
 
 # ------------------------------------------------------------ slide markup --
 
-def _is_chrome(shape, page_h: float, bbox: BBox) -> bool:
+def _is_chrome(shape, page_h: float, bbox: BBox,
+               page_w: float = 1e9) -> bool:
     """Slide chrome (page number, footer, date) that the theme should own."""
     if _ph_type_name(shape) in _CHROME_PH_TYPES:
         return True
     # unnamed text boxes hugging the bottom edge with tiny text are footers
     if (shape.has_text_frame and bbox.y > page_h * 0.92
             and len(shape.text_frame.text) < 60):
+        return True
+    # small ornaments inside the title band (course badges, QR links)
+    # decorate every slide's header, they are not content
+    if bbox.y2 <= 60 and bbox.h < 50:
+        return True
+    # ... as are small pictures pinned to the top-right corner (QR codes,
+    # logos) that repeat next to the title
+    if (bbox.y < 15 and bbox.x2 > page_w * 0.8 and bbox.w < 130
+            and not shape.has_text_frame):
         return True
     return False
 
@@ -374,21 +407,26 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
                       media_dir: Path, default_size: float,
                       context_size: float, scale: float = 1.0) -> list[FlowBlock]:
     """Classify and render the content shapes of one slide (title excluded)."""
-    from typstpresenter.verify.pptx_geometry import element_id, iter_flat_shapes
+    from typstpresenter.verify.pptx_geometry import (
+        element_id,
+        is_picture,
+        iter_flat_shapes,
+    )
 
     diagram_shapes: list[tuple] = []
     candidates: list[tuple] = []  # (kind, shape, bbox, eid)
     for shape, bbox in iter_flat_shapes(slide.shapes):
         if shape == slide.shapes.title:
             continue
-        if _is_chrome(shape, page_h, bbox) or _off_page(bbox, page_w, page_h):
+        if (_is_chrome(shape, page_h, bbox, page_w)
+                or _off_page(bbox, page_w, page_h)):
             continue
         eid = element_id(slide_index, shape.shape_id)
         if is_diagram_shape(shape):
             diagram_shapes.append((shape, bbox))
         elif getattr(shape, "has_table", False):
             candidates.append(("table", shape, bbox, eid))
-        elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+        elif is_picture(shape):
             candidates.append(("image", shape, bbox, eid))
         elif shape.has_text_frame and shape.text_frame.text.strip():
             candidates.append(("text", shape, bbox, eid))
@@ -397,6 +435,7 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
     # image (annotated screenshots) -- are annotations, not flowing prose:
     # absorb them into one canvas that keeps their relative positions.
     absorbed: list[tuple] = []
+    sparse_kernel = False
     texts = [c for c in candidates if c[0] == "text"]
     images = [c for c in candidates if c[0] == "image"]
 
@@ -410,9 +449,29 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
     labeled: set[int] = set()
     for ti, (_, _, tb, _) in enumerate(texts):
         for ii, (_, _, ib, _) in enumerate(images):
-            if _overlap_frac(tb, ib) > (0.3 if _is_small(tb) else 0.75):
+            # labels often sit flush against the image edge; a small
+            # growth catches them without swallowing separate captions
+            grown = BBox(ib.x - 12, ib.y - 12, ib.w + 24, ib.h + 24)
+            if _overlap_frac(tb, grown) > (0.3 if _is_small(tb) else 0.75):
                 on_image.add(ti)
                 labeled.add(ii)
+    # an image lying on a larger image (an inset/detail view) must keep its
+    # overlay position: both go into the canvas, the larger one as kernel
+    inset_images: set[int] = set()
+    for ii, (_, _, ib, _) in enumerate(images):
+        for jj, (_, _, jb, _) in enumerate(images):
+            if (ii != jj and ib.w * ib.h < jb.w * jb.h
+                    and _overlap_frac(ib, jb) > 0.5):
+                inset_images.add(ii)
+                labeled.add(jj)
+    # an image surrounded by several small labels is diagram art (arrows,
+    # letters, callouts placed around a screenshot): keep the arrangement
+    for ii, (_, _, ib, _) in enumerate(images):
+        near = BBox(ib.x - 40, ib.y - 40, ib.w + 80, ib.h + 80)
+        satellites = [ti for ti, (_, _, tb, _) in enumerate(texts)
+                      if _is_small(tb) and _overlap_frac(tb, near) > 0.5]
+        if len(satellites) >= 2:
+            labeled.add(ii)
 
     def _union(boxes: list[BBox]) -> BBox:
         x = min(b.x for b in boxes)
@@ -429,9 +488,20 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
         s_bounds = _union([b for _, b in diagram_shapes]) if diagram_shapes else None
         expanded = BBox(d_bounds.x - 30, d_bounds.y - 30,
                         d_bounds.w + 60, d_bounds.h + 60)
+        # thin textless decorations (brackets, arrows) spanning the slide
+        # must not swallow the text columns they decorate
+        kernel_area = sum(b.w * b.h for _, b in diagram_shapes)
+        kernel_text = any(
+            getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
+            for sh, _ in diagram_shapes)
+        sparse_kernel = (
+            s_bounds is not None and not kernel_text
+            and kernel_area < 0.15 * s_bounds.w * s_bounds.h)
+        large_text_threshold = 0.45 if sparse_kernel else 0.15
 
         absorbed = [images[ii] for ii in sorted(labeled)]
         on_image_entries = {id(texts[ti]) for ti in on_image}
+        on_image_entries |= {id(images[ii]) for ii in inset_images}
         remaining = []
         for entry in candidates:
             kind, shape, bbox, eid = entry
@@ -441,9 +511,12 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
                 absorbed.append(entry)
                 continue
             small = _is_small(bbox)
+            # large text blocks (whole columns) are prose, not annotations:
+            # a sparse decoration kernel brushing them must not swallow them
             in_area = (
                 (s_bounds is not None
-                 and _overlap_frac(bbox, s_bounds) > 0.15)
+                 and _overlap_frac(bbox, s_bounds)
+                 > (0.15 if small else large_text_threshold))
                 or (small and _overlap_frac(bbox, d_bounds) > 0.15)
             )
             # small captions hugging the diagram belong to it as well;
@@ -469,9 +542,50 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
         bounds, markup = _render_diagram_cluster(
             diagram_shapes, absorbed, page_w, default_size, context_size,
             media_dir, scale)
-        blocks.append(FlowBlock(bounds, "diagram", markup))
+        # a decoration-only canvas (thin brackets/arrows, sparse strips)
+        # lying across the text columns it decorates would force those
+        # columns to stack; losing the decoration beats halving the slide
+        kernel_text = any(
+            getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
+            for sh, _ in diagram_shapes)
+        thin = bounds.w < 80 or bounds.h < 40
+        droppable = (sparse_kernel or thin) and not kernel_text and not absorbed
+        conflicts = droppable and any(
+            _decoration_conflict(bounds, b.bbox) for b in blocks)
+        if not conflicts:
+            blocks.append(FlowBlock(bounds, "diagram", markup))
+    # a picture or note box floated in the empty right portion of a wide
+    # text box is a side figure: narrow the text's grouping bbox so both
+    # form columns instead of the floater being stacked below the text
+    for txt_block in blocks:
+        if txt_block.kind != "text":
+            continue
+        tb = txt_block.bbox
+        floated = [
+            b.bbox.x for b in blocks
+            if b is not txt_block
+            and _overlap_frac(b.bbox, tb) > 0.7
+            and b.bbox.x > tb.x + 0.5 * tb.w
+            and ((b.kind == "image" and b.bbox.w >= 100)
+                 or (b.kind == "text"
+                     and b.bbox.w * b.bbox.h < 0.25 * tb.w * tb.h))
+        ]
+        if floated:
+            new_w = max(min(floated) - 8 - tb.x, tb.w * 0.4)
+            txt_block.bbox = replace(tb, w=new_w)
+
     blocks.sort(key=lambda b: (b.bbox.y, b.bbox.x))
-    return _group_columns(blocks)
+    return _group_columns(blocks, page_w - 2 * PAGE_MARGIN_X)
+
+
+def _decoration_conflict(canvas: BBox, other: BBox) -> bool:
+    """Does a decoration canvas overlap a flow block enough to break its
+    column layout?"""
+    x_overlap = min(canvas.x2, other.x2) - max(canvas.x, other.x)
+    narrower = min(canvas.w, other.w)
+    if narrower <= 0 or x_overlap / narrower < 0.3:
+        return False
+    return _vertical_overlap(canvas, other) > 0.3
 
 
 def _vertical_overlap(a: BBox, b: BBox) -> float:
@@ -481,16 +595,94 @@ def _vertical_overlap(a: BBox, b: BBox) -> float:
     return overlap / smaller if smaller > 0 else 0.0
 
 
-def _horizontally_disjoint(a: BBox, b: BBox) -> bool:
-    return a.x2 <= b.x + 4 or b.x2 <= a.x + 4
+def _column_disjoint(a: FlowBlock, b: FlowBlock) -> bool:
+    # PPT columns routinely overlap by a few points (text boxes are drawn
+    # generously, diagram labels overhang); tolerate a sliver relative to
+    # the narrower block -- more for diagrams, whose bounds include the
+    # empty corners of their bounding box
+    factor = 0.3 if "diagram" in (a.kind, b.kind) else 0.12
+    slack = max(8.0, factor * min(a.bbox.w, b.bbox.w))
+    return a.bbox.x2 <= b.bbox.x + slack or b.bbox.x2 <= a.bbox.x + slack
 
 
-def _group_columns(blocks: list[FlowBlock]) -> list[FlowBlock]:
+def _column_of(block: FlowBlock, row: list[FlowBlock]) -> int | None:
+    """The single row column whose x-range contains `block`, if any."""
+    hits = []
+    for k, member in enumerate(row):
+        overlap = (min(block.bbox.x2, member.bbox.x2)
+                   - max(block.bbox.x, member.bbox.x))
+        frac = overlap / block.bbox.w if block.bbox.w > 0 else 0.0
+        if frac > 0.5:
+            hits.append(k)
+        elif frac > 0.2:
+            return None  # straddles a column boundary
+    return hits[0] if len(hits) == 1 else None
+
+
+def _union_bbox(boxes: list[BBox]) -> BBox:
+    x = min(b.x for b in boxes)
+    y = min(b.y for b in boxes)
+    return BBox(x, y, max(b.x2 for b in boxes) - x, max(b.y2 for b in boxes) - y)
+
+
+def _fit_to_cell(block: FlowBlock, cell_pt: float) -> str:
+    """Fixed-size content (canvas, picture) wider than its grid cell gets a
+    uniform visual shrink so it cannot overflow the cell."""
+    if block.kind in ("diagram", "image") and block.bbox.w > cell_pt > 0:
+        factor = cell_pt / block.bbox.w
+        return f"#scale({factor * 100:.0f}%, reflow: true)[{block.markup}]"
+    return block.markup
+
+
+def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
+                content_w: float) -> FlowBlock:
+    row = sorted(row, key=lambda b: b.bbox.x)
+    all_blocks = list(row) + [b for cell in extras.values() for b in cell]
+    bounds = _union_bbox([b.bbox for b in all_blocks])
+    if not extras and all(b.kind == "image" for b in row):
+        # a bare row of pictures: center it as a whole, with the source
+        # gaps as gutters, instead of spreading it over fr-columns
+        gaps = [row[k + 1].bbox.x - row[k].bbox.x2 for k in range(len(row) - 1)]
+        gutter = max(sum(gaps) / len(gaps), 4.0) if gaps else 16.0
+        cells = ", ".join(f"[{b.markup}]" for b in row)
+        markup = (f"#align(center, grid(\n  columns: {len(row)}, "
+                  f"column-gutter: {gutter:.0f}pt,\n  {cells},\n))")
+        return FlowBlock(bounds, "grid", markup)
+    widths = [max(b.bbox.w, 1.0) for b in row]
+    base = widths[0]
+    total = sum(widths)
+    usable = content_w - 16.0 * (len(row) - 1)
+    columns = ", ".join(f"{w / base:.2g}fr" for w in widths)
+    cells = []
+    # a row starting well right of the margin keeps its offset as a fixed
+    # leading column, so its horizontal placement matches the source
+    offset = bounds.x - PAGE_MARGIN_X
+    if offset > 40:
+        columns = f"{offset:.0f}pt, " + columns
+        cells.append("  [],")
+        usable -= offset
+    for k, member in enumerate(row):
+        cell_pt = usable * widths[k] / total
+        parts = [_fit_to_cell(member, cell_pt)]
+        parts += [_fit_to_cell(b, cell_pt) for b in
+                  sorted(extras.get(k, ()), key=lambda b: b.bbox.y)]
+        indented = "\n".join(f"    {line}" for line in
+                             "\n\n".join(parts).split("\n"))
+        cells.append(f"  [\n{indented}\n  ],")
+    markup = (f"#grid(\n  columns: ({columns}), column-gutter: 16pt,\n"
+              + "\n".join(cells) + "\n)")
+    return FlowBlock(bounds, "grid", markup)
+
+
+def _group_columns(blocks: list[FlowBlock],
+                   content_w: float) -> list[FlowBlock]:
     """Merge side-by-side blocks into one #grid block (columns layout).
 
     Blocks that share most of their vertical range but occupy disjoint
     horizontal ranges were columns in the original slide; stacking them
-    would double the slide height and shuffle the reading order.
+    would double the slide height and shuffle the reading order. Blocks
+    further down that stay within one column's x-range (a picture below
+    the text of its column) belong into that column's cell.
     """
     merged: list[FlowBlock] = []
     i = 0
@@ -500,45 +692,122 @@ def _group_columns(blocks: list[FlowBlock]) -> list[FlowBlock]:
         while j < len(blocks):
             cand = blocks[j]
             if (all(_vertical_overlap(cand.bbox, m.bbox) > 0.4 for m in row)
-                    and all(_horizontally_disjoint(cand.bbox, m.bbox)
-                            for m in row)):
+                    and all(_column_disjoint(cand, m) for m in row)):
                 row.append(cand)
                 j += 1
             else:
                 break
+        extras: dict[int, list[FlowBlock]] = {}
+        if len(row) > 1:
+            row.sort(key=lambda b: b.bbox.x)
+            row_bottom = max(m.bbox.y2 for m in row)
+            while j < len(blocks):
+                cand = blocks[j]
+                col = _column_of(cand, row)
+                if col is None or cand.bbox.y >= row_bottom + 40:
+                    break
+                extras.setdefault(col, []).append(cand)
+                j += 1
         if len(row) == 1:
             merged.append(row[0])
         else:
-            row.sort(key=lambda b: b.bbox.x)
-            widths = [max(b.bbox.w, 1.0) for b in row]
-            base = widths[0]
-            columns = ", ".join(f"{w / base:.2g}fr" for w in widths)
-            cells = []
-            for b in row:
-                indented = "\n".join(f"    {line}" for line in
-                                     b.markup.split("\n"))
-                cells.append(f"  [\n{indented}\n  ],")
-            x = min(b.bbox.x for b in row)
-            y = min(b.bbox.y for b in row)
-            x2 = max(b.bbox.x2 for b in row)
-            y2 = max(b.bbox.y2 for b in row)
-            markup = (f"#grid(\n  columns: ({columns}), column-gutter: 16pt,\n"
-                      + "\n".join(cells) + "\n)")
-            merged.append(FlowBlock(BBox(x, y, x2 - x, y2 - y), "grid", markup))
+            merged.append(_row_markup(row, extras, content_w))
         i = j if j > i + 1 else i + 1
     return merged
+
+
+def has_center_title(slide) -> bool:
+    """True for title-layout slides (their title is a CENTER_TITLE box)."""
+    return any(_ph_type_name(shape) == "CENTER_TITLE"
+               for shape in slide.shapes)
+
+
+def slide_title_size(slide, fallback: float = 40.0) -> float:
+    """Resolved (inherited) title size of a slide, autofit applied."""
+    title = slide.shapes.title
+    if title is None or not getattr(title, "has_text_frame", False):
+        return fallback
+    font_scale, _ = autofit_scales(title)
+    sizes = []
+    for paragraph in title.text_frame.paragraphs:
+        if not paragraph.text.strip():
+            continue
+        run = paragraph.runs[0] if paragraph.runs else None
+        size = resolve_font_size_pt(run, paragraph, title)
+        if size is not None:
+            sizes.append(size * font_scale)
+    return _round_size(max(sizes)) if sizes else fallback
+
+
+def slide_title_link(slide) -> str | None:
+    """A hyperlink carried by the title (run link or shape click action)."""
+    from pptx.oxml.ns import qn
+
+    title = slide.shapes.title
+    if title is None or not getattr(title, "has_text_frame", False):
+        return None
+    for paragraph in title.text_frame.paragraphs:
+        for run in paragraph.runs:
+            try:
+                if run.hyperlink.address:
+                    return run.hyperlink.address
+            except (AttributeError, KeyError):
+                pass
+    for el in title.element.iter(qn("a:hlinkClick")):
+        rid = el.get(qn("r:id"))
+        if rid:
+            try:
+                return title.part.rels[rid].target_ref
+            except KeyError:
+                pass
+    return None
+
+
+def deck_title_size(prs) -> float | None:
+    """Most common resolved title size of the content slides (title-layout
+    slides excluded); sizes the theme's heading preamble."""
+    weights: Counter[float] = Counter()
+    for slide in prs.slides:
+        title = slide.shapes.title
+        if title is None or has_center_title(slide):
+            continue
+        if not getattr(title, "has_text_frame", False):
+            continue
+        if not title.text_frame.text.strip():
+            continue
+        weights[slide_title_size(slide)] += 1
+    if not weights:
+        return None
+    return weights.most_common(1)[0][0]
 
 
 def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
                       media_dir: Path, default_size: float,
                       doc_size: float, scale: float = 1.0,
-                      calibration_marker: bool = False) -> list[str]:
+                      calibration_marker: bool = False,
+                      heading_size: float | None = None) -> list[str]:
     """The complete markup of one slide (heading + flowing content)."""
+    from typstpresenter.convert.textbody import typst_str
+
     from typstpresenter.convert.emitter import slide_title_text
 
-    body: list[str] = []
     title = slide_title_text(slide)
-    body.append(f"== {escape_flow(title)}" if title else "== ")
+    if title and has_center_title(slide):
+        return _title_slide_markup(slide, slide_index, title, page_w, page_h,
+                                   media_dir, default_size, doc_size, scale,
+                                   calibration_marker)
+    body: list[str] = []
+    heading = escape_flow(title) if title else ""
+    if title:
+        # slides whose resolved title size deviates from the deck-wide
+        # heading size get an inline override inside the heading body
+        own_size = slide_title_size(slide)
+        if heading_size is not None and abs(own_size - heading_size) > 2:
+            heading = f"#text(size: {own_size:g}pt)[{heading}]"
+        link = slide_title_link(slide)
+        if link:
+            heading = f"#link({typst_str(link)})[{heading}]"
+    body.append(f"== {heading}" if heading else "== ")
     body.append("")
     if calibration_marker:
         # temporary, invisible: lets `typst query` report the page each
@@ -562,11 +831,24 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
         set_line = f"#set text(size: {context_size:g}pt)"
 
     content: list[str] = []
+    prev: FlowBlock | None = None
     for block in flow_slide_blocks(slide, slide_index, page_w, page_h,
                                    media_dir, default_size, context_size,
                                    scale):
+        # preserve deliberate vertical whitespace of the source layout
+        # (sparse slides place content low on purpose); the reference is
+        # where flow content normally starts (below the heading, if any)
+        if prev is None:
+            start = 130.0 if title else 60.0
+            if block.bbox.y > start + 25:
+                content += [f"#v({(block.bbox.y - start) * scale:.0f}pt)", ""]
+        else:
+            gap = block.bbox.y - prev.bbox.y2
+            if gap > 45:
+                content += [f"#v({(gap - 30) * scale:.0f}pt)", ""]
         content.append(block.markup)
         content.append("")
+        prev = block
     if set_line:
         # a bare #set at slide level (or a `#[..]` scope containing #align)
         # makes touying split the slide in two; the block() function is the
@@ -578,11 +860,44 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
     return body
 
 
+def _title_slide_markup(slide, slide_index: int, title: str, page_w: float,
+                        page_h: float, media_dir: Path, default_size: float,
+                        doc_size: float, scale: float,
+                        calibration_marker: bool) -> list[str]:
+    """A CENTER_TITLE slide as `#title-slide[..]`: big centered title, the
+    remaining content (subtitle, authors, date) centered below it."""
+    title_size = _round_size(slide_title_size(slide) * scale)
+    body = ["#title-slide["]
+    if calibration_marker:
+        body.append(f"  #place(hide(context metadata((s: {slide_index}, "
+                    "p: here().position().page))))")
+    body.append(f"  #text(size: {title_size:g}pt)[{escape_flow(title)}]")
+    body.append("")
+
+    chunk_lists = [
+        text_chunks_of_shape(shape, default_size)
+        for shape, bbox in _content_text_shapes(slide, page_h, page_w)
+    ]
+    slide_size = dominant_size(chunk_lists, doc_size)
+    context_size = _round_size(slide_size * scale)
+    if abs(context_size - doc_size) > 0.26:
+        body.append(f"  #set text(size: {context_size:g}pt)")
+        body.append("")
+    for block in flow_slide_blocks(slide, slide_index, page_w, page_h,
+                                   media_dir, default_size, context_size,
+                                   scale):
+        body.append(block.markup)
+        body.append("")
+    body += ["]", ""]
+    return body
+
+
 def _content_text_shapes(slide, page_h: float, page_w: float = 1e9):
     from typstpresenter.verify.pptx_geometry import iter_flat_shapes
 
     for shape, bbox in iter_flat_shapes(slide.shapes):
-        if (shape == slide.shapes.title or _is_chrome(shape, page_h, bbox)
+        if (shape == slide.shapes.title
+                or _is_chrome(shape, page_h, bbox, page_w)
                 or _off_page(bbox, page_w, page_h)):
             continue
         if (not is_diagram_shape(shape) and shape.has_text_frame

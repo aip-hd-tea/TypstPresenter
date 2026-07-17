@@ -23,11 +23,3 @@ Generelles vorgehen:
 2. Aktualisiere bitte nach *jeder* größeren Änderung, z.B. nächster Autoresearch level, oder "major fix" die *.typ und *.pdf Dateien in /tests/results_tmp/showcase von allen Test-Powerpoint-Presentations (insb. von  IBN_presentations und IBN_presentions2), damit ich als Mensch die Qualität der Konvertierung beurteilen kann. Benutzer darf ja die Option minimal=True in emit_touying(), damit der Code generiert in tests/results_tmp/showcase sollte *keine* Probes für typst Introspection enthält (z.B. sowas wie #let tp-node-probe(id), #let tp-label-probe(id, body) = ...) und für mich als Mensch lesbar ist.
 
 
-Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
-1. Der generierte Code ist nicht wirklich für Menschen editierbar.
-- Benutze statt dem Still im aktuellen Code idiomatische Sprachelemente von Typst und keine absolute Positionierung soweit möglich.
-- Zum Beispiel in tests/results_tmp/showcase/simple.typ: Slide 1 ist eigentlich recht einfach zu erzeugen, aber hat jetzt Anweisungen wie #place, #par, #text(size: 32pt) und einzelne Befehle für die einzelnen Bullet Points (zum letzten: stattdessen benutze die nativen Listen von Typst).
-- Je einfacher der generierte Typst-Code, desto besser. Sollte die Platzierung von dem Original etwas abweichen, ist das kein Problem, solange es keine Überschneidungen der einzelnen Texte oder Bilder und Texte gibt und das Ganze vernünftig aussieht. Das heißt, Einfachheit von typst-Code damit für Menschen editierbar, und koherentes, fehlerfreies Layout ist jetzt wichtiger als Originaltreue. Eventuell musst du dafür neue Benchmarks und Tests erzeugen, um das schnell zu überprüfen, als Erweiterung der Verifikation Methode A und B.
-- Mit diesem neuen Kriterium für Codeerzeugung kannst du von einfachen Beispielen zu immer komplizierteren gehen und Auto Research verwenden.
-
-2. Der Code in dem Ordner src/typstpresenter/verify ist nicht besonders gut strukturiert, Gegebenenfalls auch der zugehörige Testcode. Teile den Code eventuell in Subpackages auf und restrukturiere auch den emitter.py um, sodass der Code besser wartbar ist und mehr den Prinzipien von Clean Code entspricht.

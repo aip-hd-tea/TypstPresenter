@@ -47,20 +47,33 @@ def _run_color(run) -> str | None:
     return None
 
 
+def _run_link(run) -> str | None:
+    try:
+        return run.hyperlink.address
+    except (AttributeError, KeyError):
+        return None
+
+
+def typst_str(text: str) -> str:
+    """A Typst string literal (for URLs etc.)."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def run_style(run, paragraph, shape, default_size: float, scale: float = 1.0,
               default_color: str | None = None) -> tuple:
-    """Style signature of a run: (size, bold, italic, underline, color)."""
+    """Style signature of a run: (size, bold, italic, underline, color, link)."""
     return (
         round(run_size_pt(run, paragraph, shape, default_size, scale), 2),
         bool(run.font.bold),
         bool(run.font.italic),
         bool(run.font.underline),
         _run_color(run) or default_color,
+        _run_link(run),
     )
 
 
 def styled_text(style: tuple, text: str) -> str:
-    size, bold, italic, underline, rgb = style
+    size, bold, italic, underline, rgb, link = style
     args = [f"size: {size:g}pt"]
     if bold:
         args.append('weight: "bold"')
@@ -71,7 +84,10 @@ def styled_text(style: tuple, text: str) -> str:
     inner = escape_typst(text)
     if underline:
         inner = f"#underline[{inner}]"
-    return f"#text({', '.join(args)})[{inner}]"
+    markup = f"#text({', '.join(args)})[{inner}]"
+    if link:
+        markup = f"#link({typst_str(link)})[{markup}]"
+    return markup
 
 
 def paragraph_run_chunks(paragraph, shape, default_size: float,
@@ -118,7 +134,7 @@ def paragraph_run_chunks(paragraph, shape, default_size: float,
             if t is not None and t.text:
                 size = round(run_size_pt(None, paragraph, shape, default_size,
                                          scale), 2)
-                _append(t.text, (size, False, False, False, default_color))
+                _append(t.text, (size, False, False, False, default_color, None))
     # trailing breaks render as stray backslashes; drop them
     while chunks and not chunks[-1][0].strip("\n") and "\n" in chunks[-1][0]:
         chunks.pop()

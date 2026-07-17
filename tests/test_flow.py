@@ -46,11 +46,17 @@ def test_guard_markup_start():
 
 
 def test_inline_hash_expression_guarded_against_call_chain():
-    red = (18.0, False, False, False, "FF0000")
-    plain = (18.0, False, False, False, None)
+    red = (18.0, False, False, False, "FF0000", None)
+    plain = (18.0, False, False, False, None, None)
     markup = _paragraph_inline([("Hosts ", red), ("(Endsysteme)", plain)], 18.0)
     # without the ';' the '(' would be parsed as a call on the #text result
     assert "];(" in markup
+
+
+def test_inline_hyperlink_becomes_link():
+    linked = (18.0, False, False, False, None, "https://example.org/x?a=1")
+    markup = _paragraph_inline([("see here", linked)], 18.0)
+    assert markup == '#link("https://example.org/x?a=1")[see here]'
 
 
 @pytest.mark.skipif(not (DATA / "simple.pptx").exists(),

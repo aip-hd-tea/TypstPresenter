@@ -18,7 +18,12 @@ def emit_picture(shape, eid: str, media_dir: Path) -> str:
     via Pillow when possible; otherwise a placeholder frame keeps the
     geometry intact.
     """
-    image = shape.image
+    from typstpresenter.verify.pptx_geometry import picture_image
+
+    image = picture_image(shape)
+    if image is None:
+        return ('#rect(width: 100%, height: 100%, stroke: 0.5pt + gray)'
+                '// picture without image data')
     ext = image.ext.lower()
     if ext in _TYPST_IMAGE_EXTS:
         filename = f"{eid}.{ext}"

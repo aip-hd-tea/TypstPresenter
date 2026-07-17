@@ -1,0 +1,15 @@
+Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
+- Der generierte Type Code verwendet eine alte Konvention von Touying (Jeder Slide ist in eine Funktion gerappt). Verwende die neue Konvention bei jenen, die typst-Headers als Marker für neue Slides verwendet werden, Siehe die Dokumentation von Touying.
+- Das Layout der neuen Slides sieht nicht besonders gut aus. Insbesondere sind die Slide-Inhalte oft sehr nah an der Headerzeile, das heißt Titelzeile des Slides. Überprüfe das.
+- Die Itemized, das heißt Bulletlisten, haben komische Zeichen, ein Fragezeichen mit Rechteck statt einem Bullet Point. Eventuell ist dieses Problem schon bekannt. Hier könnte ein Font Probleme machen.
+- Der Code generiert in tests/results_tmp/showcase sollte *keine* Probes für typst Introspection enthalten (z.B. sowas wie #let tp-node-probe(id), #let tp-label-probe(id, body) = ...) und für mich als Mensch lesbar sein. Diese Introspection-Probes sollten für die internen Testverfahren aber weiterhin verwendet werden. Baue also ein Switch ein, der bei der Generierung von typst-Dateien es möglich machen, minimalen und menschenlesbaren Typed-Code zu generieren und verwende diesen für die Showcase-Dateigenerierung.
+
+
+Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
+1. Der generierte Code ist nicht wirklich für Menschen editierbar.
+- Benutze statt dem Still im aktuellen Code idiomatische Sprachelemente von Typst und keine absolute Positionierung soweit möglich.
+- Zum Beispiel in tests/results_tmp/showcase/simple.typ: Slide 1 ist eigentlich recht einfach zu erzeugen, aber hat jetzt Anweisungen wie #place, #par, #text(size: 32pt) und einzelne Befehle für die einzelnen Bullet Points (zum letzten: stattdessen benutze die nativen Listen von Typst).
+- Je einfacher der generierte Typst-Code, desto besser. Sollte die Platzierung von dem Original etwas abweichen, ist das kein Problem, solange es keine Überschneidungen der einzelnen Texte oder Bilder und Texte gibt und das Ganze vernünftig aussieht. Das heißt, Einfachheit von typst-Code damit für Menschen editierbar, und koherentes, fehlerfreies Layout ist jetzt wichtiger als Originaltreue. Eventuell musst du dafür neue Benchmarks und Tests erzeugen, um das schnell zu überprüfen, als Erweiterung der Verifikation Methode A und B.
+- Mit diesem neuen Kriterium für Codeerzeugung kannst du von einfachen Beispielen zu immer komplizierteren gehen und Auto Research verwenden.
+
+2. Der Code in dem Ordner src/typstpresenter/verify ist nicht besonders gut strukturiert, Gegebenenfalls auch der zugehörige Testcode. Teile den Code eventuell in Subpackages auf und restrukturiere auch den emitter.py um, sodass der Code besser wartbar ist und mehr den Prinzipien von Clean Code entspricht.

@@ -1,0 +1,25 @@
+Die Folien in dem Folder tests/results_tmp/showcase zeigen noch eine Reihe von Fehlern. Typischerweise betrifft das Layout, kleinere Fontgröße als im Original und fehlende Bilder.
+
+Konzentrieren wir uns zuerst auf die Datei tests/results_tmp/showcase/talk_example_a.pptx
+Folie 1: Die Platzierung des Titels in dem erzeugten PDF ist ganz oben, linksbündig und der Font ist kleiner. In dem Original PowerPoint ist der Titel in der Mitte und Font ist erheblich größer. Die Untertitel/weitere Angaben sind relativ zu dem Titel korrekt platziert in dem PDF, aber absolut gesehen an falscher Stelle.
+
+Folie 2: Der Font des Titels in dem PDF ist kleiner als in dem Originalfolie. Das Bild allerdings fehlt völlig!
+
+Folie 3: (Titel: "Title: Text left, Figure right"). Hier fehlt das Bild in der rechten Spalte!
+
+Folie 4: Das Bild der Blume sollte rechts unten sein, stattdessen ist es in der linken Spalte unten, und ca. 35% kleiner. Außerdem sollte Text als auch das Bild die Folie ausfüllen wie im Original. In dem PDF gibt es noch viel Platz in der rechten Spalte.
+
+Folie 5: (Titel: "Title: Text + some table"). Es fehlt der URL-Link unter dem Text "a comparative analysis".
+
+Folien 6+7: Diese Folien sind korrekt übersetzt, prima!
+
+Folie 8: Fast richtig. Allerdings sollten die beiden Bildern (als Ganzes) zentriert sein. Jetzt scheinen sie eher lücksbündig zu sein.
+
+Folie 9: Diese Folie ist eventuell schwierig, automatisch zu übersetzen. In dem Originalfolie gibt es für jeden drei Bilder einen Text (für die ersten zwei je ein Item, für das letzte Bild zwei Items). In der Position entsprechen sich die Bilder und der zugehörige Text, das heißt, sie bilden jeweils eine Zeile. Das ist allerdings nicht durch eine Tabelle erzeugt, sondern durch die absolute Positionierung der Bilder gegenüber dem Text. Man würde das in Typed durch das Layout-Element grid() erreichen. Man müsste allerdings hier in der Abstraktion bilden, und erkennen, dass die Bilder und der Text hier eine Zeile bilden. Fieser Fehler könnte erst später behoben werden, hat eine niedrigere Priorität.
+
+
+
+Bitte schaue sich diese Fehler an und mache folgendes:
+
+1. Versuche erst mal, neue Tests/Benchmarks für die Übersetzungstreue zwischen PowerPoint und Typst zu erstellen, die solche Probleme aufdecken. Dabei geht es hier nicht um die absolute Positionierung Und pixelgenaue Übersetzungstreuer, sondern um eine Entsprechung des Layouts, der Fonts, der relativen Größen und Positionen , alles mit Toleranzen.
+2. Im zweiten Schritt versuche dann, diese Fehler zu fixieren. Zuerst für dieses spezielle File, dann erweitere den Fix durch das Testen anderer pptx Files. Wie üblich, gehe hier in einer Auto-Research-Schleife vor und betrachte immer komplexere Fälle mit jeder weiteren Iteration. Beachte bitte die frühere Anforderung, dass der generierte Typst-Code menschenlesbar und einfach zu editieren sein sollte.

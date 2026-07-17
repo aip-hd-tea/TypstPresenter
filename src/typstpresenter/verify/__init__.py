@@ -18,4 +18,11 @@ probes and deliberately deviates from the source coordinates; it is checked
 by Method S (:mod:`method_s`): compiles, one page per slide, no ink outside
 the page, no text/image collisions beyond what the source itself contains,
 plus source-simplicity metrics.
+
+Method F (:mod:`method_f`) complements S with tolerant *structural*
+fidelity for any compiled output: every source picture appears on its page
+at a comparable relative size and region, titles render at their resolved
+source size (centered on title layouts), matched body text is not
+drastically smaller than the source (relative to the slide's uniform
+scale), and hyperlinks survive.
 """
