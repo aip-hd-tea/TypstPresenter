@@ -55,7 +55,7 @@ def _shape_text(shape) -> str:
 def _is_left_top_aligned(shape) -> bool:
     """True if the text starts at the box's top-left corner (the only case
     where ink-anchor checks in Method A are meaningful)."""
-    from typstpresenter.verify.pptx_inherit import resolve_alignment, resolve_anchor
+    from typstpresenter.convert.pptx_inherit import resolve_alignment, resolve_anchor
 
     if not shape.has_text_frame:
         return True
@@ -68,7 +68,7 @@ def _is_left_top_aligned(shape) -> bool:
 
 
 def _autofit_of(shape) -> str:
-    from typstpresenter.verify.pptx_inherit import resolve_autofit
+    from typstpresenter.convert.pptx_inherit import resolve_autofit
 
     return resolve_autofit(shape)
 
@@ -176,7 +176,7 @@ def extract_pptx_geometry(path: Path | str) -> DocGeometry:
             if kind == ElementKind.SHAPE:
                 # shapes without fill and outline leave no ink; only their
                 # text (if any) is visually verifiable
-                from typstpresenter.verify.pptx_style import (
+                from typstpresenter.convert.pptx_style import (
                     shape_fill_rgb,
                     shape_line_rgb,
                 )

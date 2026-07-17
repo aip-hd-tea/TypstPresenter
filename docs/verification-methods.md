@@ -180,12 +180,68 @@ Pillow with placeholder fallback, per-slide canvas drift calibration
 scaling of point-based paragraph spacing under autofit (fixed `#v` floors
 otherwise block shrink convergence), and measured label probes
 (`tp-label-probe`) that classify labels taller than their shape as source
-conditions. Final state: **43 of 44 showcase decks verify with 0 Method-B
-issues** (1 known residual: vl06 slide 33, stale PowerPoint fontScale).
+conditions. Final state: **all 44 showcase decks verify with 0 Method-B
+issues**. (The former vl06 residual is fixed: em-based paragraph
+leading/spacing resolved against the unshrunk context size and formed a
+fixed floor — `emit_text_body` now scales the context `#set text` size
+with the autofit factor, and the calibration runs up to 14 rounds because
+many-paragraph bodies respond sub-linearly to font scale.)
 `uv run typstpresenter showcase` regenerates .typ+PDF for all decks into
 `tests/results_tmp/showcase` for human review. Known visual gaps for the
 next levels: symbol-font runs (Wingdings bullets render as tofu), shape
 rotation is ignored, freeform geometry is approximated by its bbox.
+
+## Flow mode ("minimal") and Method S (added 2026-07-11, B-prompt session)
+
+Priorities changed: the generated Typst must be **human-editable and
+idiomatic** — simple code and a coherent, overlap-free layout now outrank
+coordinate fidelity. `emit_touying(..., minimal=True)` therefore no longer
+strips probes from the absolute-placement output; it delegates to
+`emit_minimal` (package `typstpresenter.convert`, module `flow.py`), which
+rebuilds each slide as normal document flow:
+
+- title placeholder → `== Heading` (Touying renders it),
+- bullet/numbered paragraphs → native `-` / `+` list items (nested by
+  indentation), plain paragraphs as plain markup,
+- one `#set text(size: …)` for the deck (dominant body size) plus at most
+  one per deviating slide — instead of per-run `#text(size: …)`,
+- bold/italic runs → `*…*` / `_…_` where word boundaries allow,
+- side-by-side placeholders → `#grid(columns: (…fr), …)`,
+- pictures/tables in reading order (`#image` with pt width, `#table` with
+  auto rows; dense tables >8 rows keep the source row heights),
+- autoshapes/connectors → one CeTZ canvas per slide, **absorbing** text
+  boxes and small pictures whose bbox lies in the diagram area (scattered
+  labels, annotated screenshots) at their original relative positions,
+- slide chrome (page number/footer/date placeholders, bottom-edge mini
+  text boxes) is dropped — the theme owns it; off-page parked shapes too.
+
+Minimal escaping keeps the text readable (only ``\#$*_`@<>[]`` plus `//`
+and line-start markers); a `;` terminates hash expressions where a literal
+`(`/`[`/`.` would extend their parse.
+
+**Overflow calibration without probes:** flowing content has no fixed
+boxes, so instead of PPTX autofit the emitter compiles the deck with
+temporary invisible markers (`#place(hide(context metadata(…)))` after
+each heading), reads the page each slide starts on via `typst query`, and
+shrinks slides spanning several pages (font scale ×0.85/×0.7 per round,
+floor 0.4, ≤6 rounds). The final file is written without markers.
+Touying pitfalls encoded in the emitter: a bare top-level `#set`, a
+`#[…]` scope containing `#align`, or a marker element without a blank
+line after the heading each *split the slide into two pages*; the only
+tested-safe wrapper for per-slide set rules is `#block(width: 100%)[…]`.
+
+**Method S** (`verify/method_s.py`, CLI `verify --method s`) gates flow
+output: document compiles, page count == slide count, no ink outside the
+page (4 pt slack), no text/text or text/image collisions (>35 % of the
+smaller box) — collisions that the *source slide already contains*
+(labels on screenshots etc.) are downgraded to warnings — plus
+simplicity metrics (#place count must stay 0, probe defs 0).
+`tests/test_flow.py` pins the contract; the showcase command reports
+`S: <issues>` per deck.
+
+Result: **all 32 real decks (tests/data + IBN_presentations{,2}) emit,
+compile and pass Method S with 0 issues**; the emitted source contains
+zero `#place` calls (previously every text box was absolutely placed).
 
 ## Known limitations / next steps
 

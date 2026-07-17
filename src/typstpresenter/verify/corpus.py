@@ -19,7 +19,7 @@ import pptx
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Pt
 
-from typstpresenter.verify.emitter import Fault, emit_touying, escape_typst
+from typstpresenter.convert.emitter import Fault, emit_touying, escape_typst
 from typstpresenter.verify.geometry import EMU_PER_PT, DocGeometry
 from typstpresenter.verify.pptx_geometry import extract_pptx_geometry
 
@@ -641,14 +641,15 @@ def generate_corpus(out_dir: Path | str,
 
     fault_sets: dict[str, tuple[Fault, ...]] = {
         "faulty_moved": (Fault(title_id, dx=25.0, dy=15.0),),
-        "faulty_overflow": (Fault(left_id, scale_h=0.35),),
+        "faulty_overflow": (Fault(left_id, scale_h=0.25),),
         "faulty_resized": (Fault(right_id, scale_w=0.55),),
         "faulty_missing": (Fault(left_id, drop=True),),
         "faulty_extra_text": (Fault(
             right_id,
             extra_text="This extra sentence was injected to trigger a text "
                        "overflow beyond the designated placeholder box, with "
-                       "some padding words to make absolutely sure. " + LOREM,
+                       "some padding words to make absolutely sure. "
+                       + LOREM + " " + LOREM,
         ),),
     }
     # real presentations, translated as-is

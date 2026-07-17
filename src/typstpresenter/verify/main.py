@@ -17,13 +17,23 @@ logger = logging.getLogger(__name__)
 def verify(
     pptx_path: Annotated[Path, typer.Argument(help="Ground-truth *.pptx file")],
     typ_path: Annotated[Path, typer.Argument(help="Generated *.typ file to check")],
-    method: Annotated[str, typer.Option(help="a (PDF), b (introspection) or both")] = "both",
+    method: Annotated[str, typer.Option(
+        help="a (PDF), b (introspection), both, or s (minimal/flow output)")] = "both",
 ) -> None:
     """
     Check a generated Typst presentation against its PPTX ground truth.
 
     Exits with code 1 if any issues are found.
     """
+    if method == "s":
+        from typstpresenter.verify.method_s import verify_minimal
+
+        report = verify_minimal(typ_path, pptx_path)
+        typer.echo(f"--- Method S (minimal layout sanity)\n{report.summary()}")
+        if not report.ok:
+            raise typer.Exit(code=1)
+        return
+
     truth = extract_pptx_geometry(pptx_path)
     slide0 = truth.slides[0]
     failed = False
@@ -59,10 +69,11 @@ def showcase(
     the IBN_presentations directories and the generated corpus cases), so a
     human can judge conversion quality. Regenerate after every major change.
     """
+    from typstpresenter.convert.emitter import emit_touying
     from typstpresenter.verify.compare import compare_by_id
     from typstpresenter.verify.corpus import generate_corpus
-    from typstpresenter.verify.emitter import emit_touying
     from typstpresenter.verify.method_b import run_method_b
+    from typstpresenter.verify.method_s import verify_minimal
     from typstpresenter.verify.typst_tools import TypstError, compile_pdf
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -92,13 +103,18 @@ def showcase(
             slide0 = truth.slides[0]
             result = run_method_b(typ_path, slide0.width, slide0.height)
             report = compare_by_id(truth, result.geometry, overflows=result.overflows)
-            
+
+            s_info = ""
             if emit:
+                # the human-facing showcase copy is the minimal (flow) output
                 emit_touying(pptx_path, typ_path, minimal=True)
                 compile_pdf(typ_path)
+                s_report = verify_minimal(pptx_path=pptx_path, typ_path=typ_path)
+                s_info = (f"  S: {len(s_report.issues)} issues, "
+                          f"{len(s_report.warnings)} warnings")
 
             typer.echo(f"{typ_path.stem:<50} pdf ok  B: {len(report.issues)} issues, "
-                       f"{len(report.warnings)} warnings")
+                       f"{len(report.warnings)} warnings{s_info}")
         except TypstError as error:
             failed += 1
             typer.echo(f"{typ_path.stem:<50} FAILED: {str(error)[:160]}")

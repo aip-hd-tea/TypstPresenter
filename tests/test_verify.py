@@ -130,7 +130,7 @@ def test_inherited_styles_resolved_from_master(corpus, tmp_path):
     import pptx
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 
-    from typstpresenter.verify.pptx_inherit import (
+    from typstpresenter.convert.pptx_inherit import (
         resolve_alignment,
         resolve_anchor,
         resolve_bullet,

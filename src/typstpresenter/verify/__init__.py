@@ -12,4 +12,10 @@ and compare it against the PPTX ground truth:
 
 Both produce a :class:`~typstpresenter.verify.geometry.DocGeometry` that is
 compared by :mod:`~typstpresenter.verify.compare`.
+
+Human-editable flow-mode output (``emit_touying(minimal=True)``) carries no
+probes and deliberately deviates from the source coordinates; it is checked
+by Method S (:mod:`method_s`): compiles, one page per slide, no ink outside
+the page, no text/image collisions beyond what the source itself contains,
+plus source-simplicity metrics.
 """
