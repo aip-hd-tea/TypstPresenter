@@ -1,24 +1,30 @@
+#Überblick über das Projekt TypstPresenter
+
+## Info und Referenz
 Wichtigste Infos und Pfade für das Projekt:
-- Um dieses Projekt zu verstehen, lese zuerst folgende Datei: docs/verification-methods.md
+- (Wichtig!) Um dieses Projekt zu verstehen, lese zuerst folgende Datei: docs/verification-methods.md
 - Das Projekt verwendet uv als Python package manager, halte dich daran.
 
+## Code
 Der relevante Code befindet sich in den Foldern und Dateien:
 - src/typstpresenter/convert
 - src/typstpresenter/verify
 - src/typstpresenter/__main__.py
-Weiterhin wird für Tests die Datei verwendet: tests/test_verify.py
-Der restliche Code ist von einem früheren Versuch und nicht so wichtig. Kann ignoriert werden.
 
+## Tests
+Weiterhin werden für Tests die Dateien verwendet:
+tests/test_verify.py, tests/test_diagram_fidelity.py, tests/test_flow.py und ggf. andere
+Das meiste von dem restlichen Code ist von einem früheren Versuch und nicht so wichtig (kann erstmal ignoriert werden).
+
+## Testdaten
 Die Testdaten sind in dem Folder: tests/data
 Insbesondere die Folder tests/data/IBN_presentations und tests/data/IBN_presentations2 enthalten viele PowerPoint-Präsentationen, anhand deren das Projekt getestet werden kann.
+Die Ergebnisse der Konvertierung werden in tests/results_tmp/showcase geschrieben.
 
 
 
-Die Konvertierung von pptx zu typst funktioniert schon recht gut, allerdings gibt es noch eine Reihe von Problemen.
-
-Generelles vorgehen:
-
-0. (if not already done) Set the permissions to this project as follows: allow all git commants, all read/writes in project directory C:/Extra/Code/UniTools/TypstPresenter and other temp dirs; executing python code from project and any shell code (powershell, bash etc.); getting data from the web (browsing) etc. In general, set the permissions so that I don't need to manually confirm anything.
+## General approach
+0. (if not already done) Set the permissions to this project as follows: allow all git commands, all read/writes in project directory C:/Extra/Code/UniTools/TypstPresenter and other temp dirs; executing python code from project and any shell code (powershell, bash etc.); getting data from the web (browsing) etc. In general, set the permissions so that I don't need to manually confirm anything.
 1. Existierende Probleme sollten nacheinander in einer Auto-Research / Selbstverbesserungsschleife (z.T. erklärt in docs/verification-methods.md) angegangen werden. Schleife hier bedeutet: Nach jeder Änderung führe Tests durch, überprüfe auf mögliche Fehler, verbessere den Converter/emitter.py und wiederhole die Schleife. Stoppe nicht. Falls dir Probleme beziehungsweise Testfälle ausgehen, schreib das auf die Konsole und versuche sogar, neue PowerPoint-Datei zu generieren oder vom Internet zu laden.
 2. Aktualisiere bitte nach *jeder* größeren Änderung, z.B. nächster Autoresearch level, oder "major fix" die *.typ und *.pdf Dateien in /tests/results_tmp/showcase von allen Test-Powerpoint-Presentations (insb. von  IBN_presentations und IBN_presentions2), damit ich als Mensch die Qualität der Konvertierung beurteilen kann. Benutzer darf ja die Option minimal=True in emit_touying(), damit der Code generiert in tests/results_tmp/showcase sollte *keine* Probes für typst Introspection enthält (z.B. sowas wie #let tp-node-probe(id), #let tp-label-probe(id, body) = ...) und für mich als Mensch lesbar ist.
 
