@@ -1,0 +1,17 @@
+# Overview
+1. First read file "docs/prompts_v2/A_project_overview.txt" and related files.
+2. Then proceed with the implementation plan below
+3. Use the autoresearch loop - do not stop, continue with improvement!
+
+
+## Implementation plan
+
+Es ist offenbar sehr schwierig und mühsam, PowerPoint-Diagramme direkt zu Typst Code in cetz oder Fletcher zu übersetzen. Stattdessen versuche jetzt einen anderen Weg: Übersetze PowerPoint-Diagramme direkt zu SVG Images und binde dann diese SVG Images in die Typst-Folien ein.
+0. First, create a thoughtful plan how to achieve this, and write out the plan as file in dir docs.
+1. Dazu Erzeuge erst mal einige einfache PowerPoint-Diagramme als Testdaten der Komplexität eins. Dann mache diese Diagramme etwas komplizierter - das werden die Diagramme der Komplexitätsstufe zwei und drei. Danach nehme einige Diagramme aus den existierenden Testdaten (pptx Dateien), die jetzt für den Showcase verwendet werden. Versuche, die auch nach der Komplexität zu ordnen und erzeuge daran, daraus Diagramme der nächsten Komplexitätsstufen (4..6).
+2. Erstelle dann einige präzise Benchmarks bzw. Tests, wie gut eine Übersetzung von PowerPoint-Diagrammen zu SVG funktioniert. Das heißt, ob das Resultat gleich aussieht wie die Original-PowerPoint-Diagramme. Greife hier auch ggf. auf die vorhandenen Quelltexte in dieser Reop zur Überprüfung der Gleichheit zwischen PowerPoint-Diagrammen und cetz bzw. fletcher-Code.
+3. Erstelle den Code für die Übersetzung der Diagramme der Komplexitätsstufe eins und teste den Code. Bitte kopiere die entsprechenden pptx Diagramme (als pptx Folien) und die daraus generierten SVG-Diagramme in ein Subdirectory von tests/results_tmp, sodass ich die Korrektheit der Übersetzung optisch beurteilen kann. Bitte informiere mich, wenn die ersten Übersetzungen vorliegen.
+4. Fahre dann mit den Diagrammen der Komplexitätsstufe zwei entsprechend, implementiere die Konvertierung und teste das Ergebnis. Wenn das alles gut funktioniert, gehe dann zur Komplexitätsstufe drei, vier und so weiter. Auch hier lege die PowerPoint-Diagramme und die zugehörigen SVG-Images in ein Directory von tests/results_tmp, wo ich das beurteilen kann und informiere mich über die neuen Zwischenresultate.
+
+
+Generell, platziere den Code für diese neue Konvertierung in ein neues Subdirectory/Python package von src/typstpresenter, sodass man diesen neuen Code mit dem bisherigen nicht "hart" vermischt. Der Grund ist, dass eventuell  dieser Code ganz  in ein anderes Projekt ausgelagert wird. Du kannst aber den bisherigen Code refaktoren, z.B. falls du zum Beispiel Subroutinen daraus brauchst. Trenne den Code analog für den Testcode in dem Ordner Tests.

@@ -34,6 +34,11 @@ _THEME_ENUM_TO_SCHEME = {
     MSO_THEME_COLOR.LIGHT_2: "lt2",
     MSO_THEME_COLOR.HYPERLINK: "hlink",
     MSO_THEME_COLOR.FOLLOWED_HYPERLINK: "folHlink",
+    # clrMap-mapped names (aliases resolved by _scheme_lookup)
+    MSO_THEME_COLOR.TEXT_1: "tx1",
+    MSO_THEME_COLOR.TEXT_2: "tx2",
+    MSO_THEME_COLOR.BACKGROUND_1: "bg1",
+    MSO_THEME_COLOR.BACKGROUND_2: "bg2",
 }
 
 

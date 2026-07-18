@@ -36,6 +36,15 @@ _CHROME_PH_TYPES = {"SLIDE_NUMBER", "FOOTER", "DATE"}
 
 # Page margins of the emitted deck (shared with the emitter's config-page).
 PAGE_MARGIN_X = 30.0
+
+# Diagram cluster backend: "cetz" (default) draws CeTZ canvases; "svg"
+# translates the cluster to an SVG file embedded via #image (package
+# typstpresenter.diagram2svg), falling back to CeTZ for content SVG
+# cannot represent yet.  Override via env TP_DIAGRAM_BACKEND or set
+# flow.DIAGRAM_BACKEND programmatically.
+import os as _os
+
+DIAGRAM_BACKEND = _os.environ.get("TP_DIAGRAM_BACKEND", "cetz")
 PAGE_MARGIN_TOP = 24.0
 PAGE_MARGIN_BOTTOM = 30.0
 
@@ -559,6 +568,16 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
     stacking them as flowing paragraphs would garble the picture and blow
     up the slide height.
     """
+    if DIAGRAM_BACKEND == "svg":
+        from typstpresenter.diagram2svg.cluster import render_cluster_svg
+
+        rendered = render_cluster_svg(
+            cluster, absorbed, page_w, default_size, context_size, media_dir,
+            scale, slide_index, cluster_index, canvas_markers,
+            page_margin_x=PAGE_MARGIN_X)
+        if rendered is not None:
+            return rendered
+
     from typstpresenter.convert.cetz import _shape_rotation_deg, effective_bbox
 
     boxes = ([effective_bbox(shape, b) for shape, b in cluster]

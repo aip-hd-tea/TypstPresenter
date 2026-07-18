@@ -1,3 +1,13 @@
 1. First read file "docs/prompts_v2/A_project_overview.txt" and related files.
 2. Then proceed with the implementation according to the plan in "docs/diagram-translation-plan.md".
 3. Use the autoresearch loop - do not stop, continue with improvement!
+
+
+# agy or claude code: please ignore the following
+18.07.2026 @ 21:00
+Resume with -c (or command below):
+agy --conversation=8ee47ac7-c16c-4511-b055-2b223a671f47
+
+18.07.2026 @ 13:00
+Resume this session with:
+claude --resume 86a40c0b-4d7d-4b2b-bc7a-36c72f412907
