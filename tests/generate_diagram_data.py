@@ -351,6 +351,7 @@ _EXTRACTS = [
     ("L5", "IBN_presentations/vlN01-ibn.pptx", 31, "vlN01-s31"),
     ("L5", "IBN_presentations/vlxN03-ibn.pptx", 17, "vlxN03-s17"),
     ("L5", "IBN_presentations/vlxN04-ibn.pptx", 30, "vlxN04-s30"),
+    ("L6", "IBN_presentations/vlN01-ibn.pptx", 22, "vlN01-s22-ole"),
 ]
 
 

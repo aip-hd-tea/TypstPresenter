@@ -251,3 +251,69 @@ levels built so far, never one case.
     Symbol/Wingdings runs and PUA F0xx chars to Unicode (λ, μ, ▪, ✓ …)
     with per-run `a:sym` detection and buFont-aware bullet glyphs.
   - 17 tests in tests/test_diagram2svg.py; scoreboard runs pending.
+- **2026-07-18** (S4 complete):
+  - **Scoreboard** (9 curated problem decks, fresh CeTZ baseline vs
+    `TP_DIAGRAM_BACKEND=svg`, logs in tests/results_tmp/showcase_*.log,
+    comparison script tests/results_tmp/compare_showcase_logs.py):
+    - Method S: **0 issues on every deck under both backends**; warning
+      counts comparable (svg lower on vlxN09 51 vs 65, vl04 10 vs 12).
+    - Method F: CeTZ 1 issue total (vl16); **SVG 0 issues** after the
+      hyperlink fallback (clusters whose text carries hyperlinks render
+      via CeTZ, since typst cannot attach link annotations inside an
+      embedded SVG — same fallback pattern as tables).
+    - Method D: issues down across the board (vl16 10→2, vl12 7→6,
+      vl08 4→3, vl06 1→0, vlxN09 1→0), but *coverage* drops (e.g.
+      85→49 %) because typst flattens SVG text to glyph outlines, which
+      floods the PDF with vector paths and triggers D's abstention.
+      D on SVG output therefore under-reports what it checks; the
+      structural gate on the SVG itself is the stronger instrument now.
+  - Full test suite: 101 passed. Extract decks: structural gate 0
+    findings / 0 fallbacks on all 10.
+  - **Recommendation**: switch `DIAGRAM_BACKEND` default to "svg" —
+    equal or better on every gated metric and categorically better on
+    preset geometry (865 formerly bbox-fallback shapes now exact).
+    Left at "cetz" pending the user's visual review of
+    tests/results_tmp/showcase_svg (deliberate: default flips are
+    corpus-visible and should be a human call).
+  - **Remaining for S5**: multi-cluster slides as separate SVGs (G5),
+    OLE preview images in clusters (G6), per-shape text overflow inside
+    shapes (G3 — shrink-to-fit in text.py), decide default backend.
+- **2026-07-19** (S5 complete — G3, G5, G6):
+  - **G3**: `text.py` shrinks `normAutofit` text to its box by exact
+    arithmetic (re-layout loop ≤5 rounds, floor 0.4) — only when the
+    source declares autofit; genuine source overflow stays faithful.
+  - **G6 root cause found**: `pptx_geometry.picture_image`'s OLE branch
+    called `shape.part.related_parts`, which does not exist in this
+    python-pptx version; a broad `except` had swallowed the
+    AttributeError since the feature was written — OLE previews *never*
+    extracted. Fixed via `part.rels[rId].target_part`; vlN01 s22's WMF
+    equation previews now convert to PNG and render in both backends
+    (shared-code fix, applies to all 135 corpus OLE shapes).
+  - **G5**: `flow._spatial_components` splits a slide's diagram content
+    into disjoint clusters (union-find over 25 pt-padded bboxes;
+    text-only strays and single-shape specks merge into the nearest
+    substantial group; split only when ≥2 substantial components
+    remain). Each component renders as its own canvas/SVG
+    (`cluster_index` finally > 0). vl04's states slide splits into 3
+    clusters and renders identically (S/F 0/0).
+  - **Corpus validation** (full showcase, both backends, after all
+    three changes): Method S 0 issues everywhere; Method F 0 issues on
+    the SVG backend, CeTZ keeps only its pre-existing vl16 issue.
+    Warning counts rose slightly (e.g. vlxN09 S-warnings 51→82) —
+    inspected: all "text overlaps image" source-condition downgrades
+    that now fire because formerly-dropped OLE content renders and SVG
+    clusters register as images. Full suite: 104 passed.
+  - L6 extract `L6-vlN01-s22-ole.pptx` added to the ladder; tests for
+    G3 (autofit shrink), G5 (component splitting), G6 (OLE preview).
+  - **Open**: default backend still "cetz" — recommendation to flip to
+    "svg" stands, pending the user's visual review; Session-4-style
+    visual reference tier (edge-map similarity vs PowerPoint COM
+    renders) remains unbuilt; structure lifting beyond the existing
+    Fletcher detector untouched.
+- **2026-07-19** (default backend flipped to "svg", user-approved):
+  - `flow.DIAGRAM_BACKEND` defaults to "svg"; `TP_DIAGRAM_BACKEND=cetz`
+    restores the old path. Three CeTZ-specific regression guards
+    (freeform polygon, rotation, absorbed-text angle) now pin the CeTZ
+    backend explicitly via monkeypatch. Full suite: 104 passed.
+  - Human-facing showcase (tests/results_tmp/showcase) regenerated with
+    the new default (log: showcase_default_svg.log).

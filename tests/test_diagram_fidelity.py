@@ -46,10 +46,14 @@ def test_synthetic_diagram_is_faithful(tmp_path, name):
     assert report.ok, report.summary()
 
 
-def test_freeform_renders_as_polygon_not_bbox(tmp_path):
+def test_freeform_renders_as_polygon_not_bbox(tmp_path, monkeypatch):
     """Regression guard: freeform shapes were briefly (this session)
     misclassified as connectors and drawn as a bogus diagonal line across
-    their own bounding box -- not even the documented bbox fallback."""
+    their own bounding box -- not even the documented bbox fallback.
+    Pins the CeTZ backend (default is svg since 2026-07-19)."""
+    import typstpresenter.convert.flow as flow
+
+    monkeypatch.setattr(flow, "DIAGRAM_BACKEND", "cetz")
     from typstpresenter.verify.corpus import build_freeform_shapes
 
     pptx_path = tmp_path / "freeform.pptx"
@@ -66,8 +70,12 @@ def test_freeform_renders_as_polygon_not_bbox(tmp_path):
             f"bbox/line fallback, not the actual polygon: {call_line}")
 
 
-def test_rotation_is_applied(tmp_path):
-    """Regression guard: shape rotation used to be silently ignored."""
+def test_rotation_is_applied(tmp_path, monkeypatch):
+    """Regression guard: shape rotation used to be silently ignored.
+    Pins the CeTZ backend (default is svg since 2026-07-19)."""
+    import typstpresenter.convert.flow as flow
+
+    monkeypatch.setattr(flow, "DIAGRAM_BACKEND", "cetz")
     from typstpresenter.verify.corpus import build_rotated_shapes
 
     pptx_path = tmp_path / "rotated.pptx"

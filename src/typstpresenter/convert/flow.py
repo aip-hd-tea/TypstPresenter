@@ -37,14 +37,16 @@ _CHROME_PH_TYPES = {"SLIDE_NUMBER", "FOOTER", "DATE"}
 # Page margins of the emitted deck (shared with the emitter's config-page).
 PAGE_MARGIN_X = 30.0
 
-# Diagram cluster backend: "cetz" (default) draws CeTZ canvases; "svg"
-# translates the cluster to an SVG file embedded via #image (package
-# typstpresenter.diagram2svg), falling back to CeTZ for content SVG
-# cannot represent yet.  Override via env TP_DIAGRAM_BACKEND or set
-# flow.DIAGRAM_BACKEND programmatically.
+# Diagram cluster backend: "svg" (default since 2026-07-19, user-approved
+# after the S4 scoreboard: S/F gates equal or better than CeTZ, exact
+# geometry for all 187 presets) translates each cluster to an SVG file
+# embedded via #image (package typstpresenter.diagram2svg), falling back
+# to CeTZ for content SVG cannot represent yet (tables, hyperlink text,
+# unembeddable images).  "cetz" draws CeTZ canvases directly.  Override
+# via env TP_DIAGRAM_BACKEND or set flow.DIAGRAM_BACKEND programmatically.
 import os as _os
 
-DIAGRAM_BACKEND = _os.environ.get("TP_DIAGRAM_BACKEND", "cetz")
+DIAGRAM_BACKEND = _os.environ.get("TP_DIAGRAM_BACKEND", "svg")
 PAGE_MARGIN_TOP = 24.0
 PAGE_MARGIN_BOTTOM = 30.0
 
@@ -1151,22 +1153,28 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
         if fletcher_block is not None:
             blocks.append(fletcher_block)
         else:
-            bounds, markup = _render_diagram_cluster(
-                diagram_shapes, absorbed, page_w, default_size, context_size,
-                media_dir, scale, slide_index=slide_index, cluster_index=0,
-                canvas_markers=canvas_markers)
-            # a decoration-only canvas (thin brackets/arrows, sparse strips)
-            # lying across the text columns it decorates would force those
-            # columns to stack; losing the decoration beats halving the slide
-            kernel_text = any(
-                getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
-                for sh, _ in diagram_shapes)
-            thin = bounds.w < 80 or bounds.h < 40
-            droppable = (sparse_kernel or thin) and not kernel_text and not absorbed
-            conflicts = droppable and any(
-                _decoration_conflict(bounds, b.bbox) for b in blocks)
-            if not conflicts:
-                blocks.append(FlowBlock(bounds, "diagram", markup))
+            # G5: spatially disjoint diagram groups render as separate
+            # clusters instead of one oversized sparse union canvas
+            components = _spatial_components(diagram_shapes, absorbed)
+            for ci, (comp_shapes, comp_absorbed) in enumerate(components):
+                bounds, markup = _render_diagram_cluster(
+                    comp_shapes, comp_absorbed, page_w, default_size,
+                    context_size, media_dir, scale, slide_index=slide_index,
+                    cluster_index=ci, canvas_markers=canvas_markers)
+                # a decoration-only canvas (thin brackets/arrows, sparse
+                # strips) lying across the text columns it decorates would
+                # force those columns to stack; losing the decoration beats
+                # halving the slide
+                kernel_text = any(
+                    getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
+                    for sh, _ in comp_shapes)
+                thin = bounds.w < 80 or bounds.h < 40
+                droppable = ((sparse_kernel or thin) and not kernel_text
+                             and not comp_absorbed)
+                conflicts = droppable and any(
+                    _decoration_conflict(bounds, b.bbox) for b in blocks)
+                if not conflicts:
+                    blocks.append(FlowBlock(bounds, "diagram", markup))
     # a picture or note box floated in the empty right portion of a wide
     # text box is a side figure: narrow the text's grouping bbox so both
     # form columns instead of the floater being stacked below the text
@@ -1189,6 +1197,75 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
 
     blocks.sort(key=lambda b: (b.bbox.y, b.bbox.x))
     return _group_columns(blocks, page_w - 2 * PAGE_MARGIN_X, scale=scale)
+
+
+def _spatial_components(diagram_shapes: list[tuple], absorbed: list[tuple],
+                        pad: float = 25.0) -> list[tuple[list, list]]:
+    """Partition a slide's diagram content into spatially disjoint groups.
+
+    Two entries connect when their bboxes, inflated by `pad` pt, overlap.
+    Components without a diagram shape (stray absorbed labels) and tiny
+    single-shape specks merge into the nearest substantial component, so a
+    split only happens between genuinely separate drawings (gap G5).
+    """
+    entries = ([("d", e, e[1]) for e in diagram_shapes]
+               + [("a", e, e[2]) for e in absorbed])
+    n = len(entries)
+    if n == 0:
+        return [(diagram_shapes, absorbed)]
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def near(a: BBox, b: BBox) -> bool:
+        return not (a.x2 + pad < b.x or b.x2 + pad < a.x
+                    or a.y2 + pad < b.y or b.y2 + pad < a.y)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if near(entries[i][2], entries[j][2]):
+                parent[find(i)] = find(j)
+
+    groups: dict[int, list] = {}
+    for i, entry in enumerate(entries):
+        groups.setdefault(find(i), []).append(entry)
+    comps = list(groups.values())
+    if len(comps) <= 1:
+        return [(diagram_shapes, absorbed)]
+
+    def has_shape(c) -> bool:
+        return any(tag == "d" for tag, _, _ in c)
+
+    def substantial(c) -> bool:
+        area = sum(b.w * b.h for _, _, b in c)
+        return has_shape(c) and (len(c) >= 2 or area >= 2500)
+
+    big = [c for c in comps if substantial(c)]
+    if len(big) <= 1:
+        return [(diagram_shapes, absorbed)]
+
+    def center(c) -> tuple[float, float]:
+        u = _union_bbox([b for _, _, b in c])
+        return u.center
+
+    for c in comps:
+        if c in big:
+            continue
+        cx, cy = center(c)
+        target = min(big, key=lambda g: (center(g)[0] - cx) ** 2
+                     + (center(g)[1] - cy) ** 2)
+        target.extend(c)
+
+    big.sort(key=lambda c: (min(b.y for _, _, b in c), min(b.x for _, _, b in c)))
+    return [
+        ([e for tag, e, _ in c if tag == "d"],
+         [e for tag, e, _ in c if tag == "a"])
+        for c in big
+    ]
 
 
 def _decoration_conflict(canvas: BBox, other: BBox) -> bool:

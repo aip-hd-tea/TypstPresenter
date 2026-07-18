@@ -244,47 +244,72 @@ def layout_shape_text(
     # OOXML default anchor is top (bodyPr without @anchor)
     anchor = tf.vertical_anchor or MSO_ANCHOR.TOP
 
-    lines: list[Line] = []
-    for para in tf.paragraphs:
-        try:
-            align = resolve_alignment(para, shape)
-        except (AttributeError, KeyError, ValueError):
-            align = para.alignment
-        content = _resolve_runs(para, shape, default_color, default_size, size_scale)
-        real = [r for r in content if r is not None]
-        if not real:
-            lines.append(Line([], align))
-            continue
-        try:
-            bullet = resolve_bullet(para, shape)
-        except (AttributeError, KeyError, ValueError):
-            bullet = None
-        if bullet:
-            from typstpresenter.diagram2svg.symbols import bullet_font, map_symbol_text
-
-            glyph = map_symbol_text(bullet, bullet_font(para))
-            r0 = real[0]
-            content.insert(0, Run(f"{glyph} ", r0.font, r0.size_pt, False, False, r0.color))
-        # explicit a:br breaks split the paragraph into wrap segments
-        segment: list[Run] = []
-        segments: list[list[Run]] = []
-        for item in content:
-            if item is _BREAK:
-                segments.append(segment)
-                segment = []
-            else:
-                segment.append(item)
-        segments.append(segment)
-        for seg in segments:
-            if not seg:
-                lines.append(Line([], align))
+    def _build_lines(scale: float) -> list[Line]:
+        built: list[Line] = []
+        for para in tf.paragraphs:
+            try:
+                align = resolve_alignment(para, shape)
+            except (AttributeError, KeyError, ValueError):
+                align = para.alignment
+            content = _resolve_runs(para, shape, default_color, default_size, scale)
+            real = [r for r in content if r is not None]
+            if not real:
+                built.append(Line([], align))
                 continue
-            for line_runs in _wrap(seg, box_w):
-                lines.append(Line(line_runs, align))
+            try:
+                bullet = resolve_bullet(para, shape)
+            except (AttributeError, KeyError, ValueError):
+                bullet = None
+            if bullet:
+                from typstpresenter.diagram2svg.symbols import (
+                    bullet_font,
+                    map_symbol_text,
+                )
 
-    total_h = sum(
-        ln.pitch() if ln.runs else _DEFAULT_SIZE_PT * 1.22 for ln in lines
-    )
+                glyph = map_symbol_text(bullet, bullet_font(para))
+                r0 = real[0]
+                content.insert(
+                    0, Run(f"{glyph} ", r0.font, r0.size_pt, False, False, r0.color))
+            # explicit a:br breaks split the paragraph into wrap segments
+            segment: list[Run] = []
+            segments: list[list[Run]] = []
+            for item in content:
+                if item is _BREAK:
+                    segments.append(segment)
+                    segment = []
+                else:
+                    segment.append(item)
+            segments.append(segment)
+            for seg in segments:
+                if not seg:
+                    built.append(Line([], align))
+                    continue
+                for line_runs in _wrap(seg, box_w):
+                    built.append(Line(line_runs, align))
+        return built
+
+    def _height(built: list[Line]) -> float:
+        return sum(
+            ln.pitch() if ln.runs else _DEFAULT_SIZE_PT * 1.22 for ln in built
+        )
+
+    lines = _build_lines(size_scale)
+    total_h = _height(lines)
+
+    # G3: normAutofit shapes shrink text to the box even when the deck
+    # stores no fontScale (PowerPoint only persists it after editing).
+    # We lay text out ourselves, so the shrink is exact arithmetic.
+    from typstpresenter.convert.pptx_inherit import resolve_autofit
+
+    avail_h = max(rb - rt - 2 * ins_y, 1.0)
+    if resolve_autofit(shape) == "shrink":
+        scale = size_scale
+        for _ in range(5):
+            if total_h <= avail_h * 1.02 or scale <= 0.4:
+                break
+            scale = max(0.4, scale * avail_h / total_h)
+            lines = _build_lines(scale)
+            total_h = _height(lines)
     if anchor == MSO_ANCHOR.MIDDLE:
         y = rt + (rb - rt - total_h) / 2.0
     elif anchor == MSO_ANCHOR.BOTTOM:

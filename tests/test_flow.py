@@ -111,7 +111,10 @@ def test_brace_renders_as_stroke_not_filled_bar():
     assert "rect(" not in markup  # no theme-filled bar over the content
 
 
-def test_rotated_absorbed_text_gets_canvas_angle(tmp_path):
+def test_rotated_absorbed_text_gets_canvas_angle(tmp_path, monkeypatch):
+    import typstpresenter.convert.flow as flow
+
+    monkeypatch.setattr(flow, "DIAGRAM_BACKEND", "cetz")
     from pptx import Presentation
     from pptx.util import Pt
 

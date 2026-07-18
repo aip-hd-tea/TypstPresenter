@@ -77,15 +77,16 @@ def picture_image(shape):
         is_ole = True
 
     if is_ole:
-        try:
-            for blip in shape.element.iter(qn("a:blip")):
-                rId = blip.get(qn("r:embed"))
-                if rId and rId in shape.part.related_parts:
-                    part = shape.part.related_parts[rId]
-                    if hasattr(part, "image"):
-                        return part.image
-        except Exception:
-            pass
+        for blip in shape.element.iter(qn("a:blip")):
+            rId = blip.get(qn("r:embed"))
+            if not rId:
+                continue
+            try:
+                part = shape.part.rels[rId].target_part
+            except (KeyError, AttributeError):
+                continue
+            if hasattr(part, "image"):
+                return part.image
     return None
 
 

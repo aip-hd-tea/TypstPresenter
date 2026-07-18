@@ -268,6 +268,75 @@ def test_svg_backend_flow_integration(tmp_path, monkeypatch):
     assert "<tspan" in svg and "#4F81BD" in svg
 
 
+def test_g3_normautofit_shrinks_text(tmp_path):
+    """A normAutofit shape with too much text shrinks it into the box."""
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.oxml.ns import qn
+    from pptx.util import Emu, Pt
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Emu(12192000), Emu(6858000)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Pt(100), Pt(100), Pt(200), Pt(60))
+    box.text_frame.text = ("Sehr viel Text " * 12).strip()
+    for para in box.text_frame.paragraphs:
+        for run in para.runs:
+            run.font.size = Pt(24)
+    bodyPr = box.text_frame._txBody.find(qn("a:bodyPr"))
+    bodyPr.append(bodyPr.makeelement(qn("a:normAutofit"), {}))
+    path = tmp_path / "autofit.pptx"
+    prs.save(path)
+
+    results = pptx_to_svgs(path, tmp_path)
+    svg = results[0][0].read_text(encoding="utf-8")
+    import re
+
+    sizes = [float(m) for m in re.findall(r'font-size="([\d.]+)"', svg)]
+    assert sizes and max(sizes) < 24 * 0.95, f"text not shrunk: {sizes}"
+
+
+def test_g5_spatial_components():
+    from typstpresenter.convert.flow import _spatial_components
+    from typstpresenter.verify.geometry import BBox
+
+    def shp(x, y, w=100, h=60):
+        return (object(), BBox(x, y, w, h))
+
+    # two far-apart pairs split; a connector bridging them keeps one group
+    left = [shp(50, 100), shp(50, 180)]
+    right = [shp(600, 100), shp(600, 180)]
+    comps = _spatial_components(left + right, [])
+    assert len(comps) == 2
+    bridge = [shp(140, 120, 460, 20)]  # overlaps both sides
+    comps = _spatial_components(left + right + bridge, [])
+    assert len(comps) == 1
+    # a lone tiny speck merges into the nearest substantial group
+    speck = [shp(300, 500, 10, 10)]
+    comps = _spatial_components(left + right + speck, [])
+    assert len(comps) == 2
+    assert sum(len(c[0]) for c in comps) == 5
+
+
+def test_g6_ole_preview_extraction():
+    from generate_diagram_data import DATA_DIR
+
+    import pptx as _pptx
+
+    from typstpresenter.verify.pptx_geometry import iter_flat_shapes, picture_image
+
+    deck = DATA_DIR / "L6-vlN01-s22-ole.pptx"
+    if not deck.exists():
+        pytest.skip("L6 extract not generated")
+    prs = _pptx.Presentation(deck)
+    previews = [
+        picture_image(sh)
+        for sh, _ in iter_flat_shapes(list(prs.slides)[0].shapes)
+        if sh.shape_id in (28, 29)
+    ]
+    assert len(previews) == 2 and all(p is not None for p in previews)
+
+
 def test_l1_svg_wellformed_and_sized(l1_results):
     import xml.etree.ElementTree as ET
 
