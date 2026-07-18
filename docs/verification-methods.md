@@ -301,6 +301,96 @@ to zero:
 expected constructs, and that a doctored deck — dropped image, 20 pt
 headings — is flagged).
 
+## Method D: diagram/connector translation fidelity (added 2026-07-18)
+
+Method S/F check text, images and overall layout, but nothing looked at
+*what CeTZ actually drew* inside a diagram canvas. `verify/method_d.py`
+compares each slide's PPTX autoshapes/connectors against the vector paths
+PyMuPDF extracts from the compiled PDF (`page.get_drawings()`):
+
+- typst splits a filled+stroked shape into two draw records sharing one
+  bbox (`f`/`fs` for fill, `s` for stroke, sometimes a `qu` quad for a
+  rect's stroke) -- `_merge_drawings` groups them back into one item and
+  classifies it: curves only → ellipse; closed polygon → rect/diamond
+  (`axis_aligned` distinguishes them: a diamond's 4 edges all have both
+  dx≠0 and dy≠0); small closed triangles (<10pt diagonal) are dropped as
+  arrowhead markers, not shapes.
+- shapes are matched source↔rendered via one **normalized-geometry** pass:
+  both sides' shape bboxes are expressed as fractions of their own
+  cluster's bounding box (`_normalize`), which is robust to the canvas
+  being uniformly scaled/translated/aligned by the flow emitter, then
+  matched by minimizing normalized position+size distance (greedy, like
+  Method F's image matching). Position/size drift, expected-vs-rendered
+  shape kind, and fill/stroke color (RGB, ±40/channel) are then checked.
+- connector topology is checked by mapping a rendered connector's bbox
+  corners back into source space via the same cluster-derived affine
+  transform (`_map_point`) and testing whether they land near both of the
+  two shapes the source connector's endpoints are nearest to.
+- rotation: a `_SourceShape`'s `effective_bbox` is its corners rotated by
+  the PPTX `rot` (clockwise, y-down) around center, so a 90°-rotated bar's
+  much wider rendered footprint is compared correctly instead of against
+  its narrow unrotated PPTX box.
+
+**Confidence scoping.** A single global affine transform + greedy
+matching only holds for a genuinely isolated diagram cluster. It is
+exact-verified (0 issues) against the **synthetic benchmark corpus**
+(`diagram_flowchart`, `diagram_mixed_shapes`, `diagram_styled_shapes`,
+`diagram_decision`, `diagram_rotated`, `diagram_freeform` -- all ≤14
+shapes). On real decks it: (a) **abstains** entirely when the rendered/
+source shape-like-path counts don't match within a tight fraction
+(`_MIN_MATCH_FRACTION = 0.92`) -- tables, absorbed images/text, and
+embedded OLE objects (dropped by the converter entirely, a separate,
+undocumented-until-now gap) all make a page's vector content unattributable;
+(b) downgrades findings to **warnings** on clusters bigger than
+`_CONFIDENT_SHAPE_COUNT = 15` shapes. Manual spot-checks of several
+"issue"-flagged real slides at smaller scale (a decorative corner-logo
+autoshape spatially unrelated to the actual diagram, sharing one slide)
+confirmed those, too, are matcher noise rather than translation bugs — a
+connected-component pre-clustering fix was attempted to address this but
+made things *worse* (broke the exact synthetic corpus by splitting
+legitimately-connected flowchart nodes whose only link is a connector,
+not spatial proximity) and was reverted. Real-deck Method D output is
+therefore informational only (shown in `showcase` as `D: <issues>
+<warnings> (<n> checked)`, not gating); the synthetic corpus is what
+actually pins the contract (`tests/test_diagram_fidelity.py`).
+
+**Bugs this benchmark found and fixed**, all confirmed via the synthetic
+corpus turning clean plus (for the two connector-classification bugs) a
+full-corpus S+F re-run showing no regressions:
+
+- `emit_cetz_shape`'s connector/shape dispatch was
+  `shape.shape_type not in (MSO_SHAPE_TYPE.AUTO_SHAPE,)` -- true for
+  **freeform shapes too** (they report `shape_type == FREEFORM`), so every
+  freeform shape in the whole corpus (160 across `tests/data`, 67 of them
+  pure straight-edged polygons) was silently drawn as a bogus diagonal
+  line across its own bounding box, not even the documented bbox
+  fallback. Fixed to the correct predicate (`shape_type == LINE or
+  tag.endswith("}cxnSp")`, matching `pptx_geometry.py`'s existing
+  convention) in both `cetz.py` and `method_d.py` itself (same bug,
+  independently written).
+- Freeform shapes now draw their *actual* polygon when the PPTX
+  `custGeom` path is straight-edged (moveTo/lnTo/close only --
+  `_freeform_points` in `cetz.py`); curved paths (cubicBezTo/quadBezTo/
+  arcTo, 93 of the 160) still fall back to the bounding box.
+- Shape rotation (PPTX `rot`, ignored since the very first emitter) is now
+  applied in flow mode via `group({ rotate(-deg, origin: center); ... })`
+  wrapping the shape+label draw calls -- CeTZ's `rotate()` is standard
+  CCW-positive math convention, PPTX is CW-positive in y-down screen
+  space, and the canvas already negates y, netting a sign flip (verified
+  by eye: 30°/-45°/90° test rectangles rotate the right way, right
+  amount). Guarded to flow mode only (`not probes`) since rotating the
+  group would also rotate the probe anchors the legacy probed emitter's
+  drift calibration measures, which assumes axis-aligned content.
+- Fixing rotation exposed a latent canvas-sizing bug: `_render_diagram_
+  cluster`'s bounds computation used shapes' raw (unrotated) PPTX bboxes,
+  underestimating a rotated shape's true rendered footprint (e.g. a tall
+  bar rotated 90° becomes wide) -- `cetz.py:effective_bbox()` widens the
+  bounds to the rotated footprint. Also added a general safety net: any
+  canvas still wider than the page's content area (e.g. a full-width
+  absorbed paragraph sharing a canvas with shapes spread across most of
+  the slide) gets an automatic additional fit-to-width scale, independent
+  of the slide-level overflow calibration.
+
 ## Known limitations / next steps
 
 - Ground truth uses the *declared* PPTX box; PowerPoint's own text
@@ -313,3 +403,13 @@ headings — is flagged).
 - Fletcher pairing currently forces node sizes/spacings from PPTX; elastic
   fletcher layouts will need looser node tolerances (`Tolerances.node_pos_pt`).
 - Method A's ink-anchor check assumes top-left-aligned text.
+- Freeform shapes with curved custGeom segments (93 in the corpus) still
+  fall back to their bounding box; supporting cubicBezTo would need a
+  CeTZ path/bezier draw command, not just `line(..., close: true)`.
+- Embedded OLE objects (`p:graphicFrame` wrapping an embedded object, not
+  a chart/table) are silently dropped -- not converted as any kind of
+  content. Seen in the corpus (e.g. vlN01-ibn slide 22); likely extractable
+  the same way pictures are, via the object's preview-image relationship.
+- Method D's shape/connector matcher does not handle a slide with several
+  spatially disjoint diagram clusters (or a diagram plus an unrelated
+  decorative autoshape) -- see "Confidence scoping" above.

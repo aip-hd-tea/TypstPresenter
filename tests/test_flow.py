@@ -13,10 +13,13 @@ import pytest
 
 from typstpresenter.convert.emitter import emit_minimal
 from typstpresenter.convert.flow import (
+    _paired_value_table,
     _paragraph_inline,
+    _render_diagram_cluster,
     escape_flow,
     guard_markup_start,
 )
+from typstpresenter.verify.geometry import BBox
 from typstpresenter.verify.method_s import source_metrics, verify_minimal
 
 pytestmark = pytest.mark.skipif(
@@ -46,21 +49,82 @@ def test_guard_markup_start():
 
 
 def test_inline_hash_expression_guarded_against_call_chain():
-    red = (18.0, False, False, False, "FF0000", None)
-    plain = (18.0, False, False, False, None, None)
+    red = (18.0, False, False, False, "FF0000", None, None)
+    plain = (18.0, False, False, False, None, None, None)
     markup = _paragraph_inline([("Hosts ", red), ("(Endsysteme)", plain)], 18.0)
     # without the ';' the '(' would be parsed as a call on the #text result
     assert "];(" in markup
 
 
 def test_inline_hyperlink_becomes_link():
-    linked = (18.0, False, False, False, None, "https://example.org/x?a=1")
+    linked = (18.0, False, False, False, None, "https://example.org/x?a=1", None)
     markup = _paragraph_inline([("see here", linked)], 18.0)
     assert markup == '#link("https://example.org/x?a=1")[see here]'
 
 
-@pytest.mark.skipif(not (DATA / "simple.pptx").exists(),
-                    reason="simple.pptx not available")
+def test_inline_highlight_becomes_highlight():
+    highlighted = (18.0, False, False, False, None, None, "00FF00")
+    markup = _paragraph_inline([("see here", highlighted)], 18.0)
+    assert markup == '#highlight(fill: rgb("#00FF00"))[see here]'
+
+
+def test_paired_value_table_merges_label_and_value_columns():
+    from pptx import Presentation
+    from pptx.util import Pt
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    a = slide.shapes.add_textbox(Pt(37), Pt(315), Pt(374), Pt(210))
+    a.text_frame.text = "In Millionen SLOC"
+    for label in ["OpenSolaris:", "Linux kernel:", "Mac OS X:", "Debian:"]:
+        a.text_frame.add_paragraph().text = label
+    b = slide.shapes.add_textbox(Pt(411), Pt(345), Pt(179), Pt(155))
+    b.text_frame.text = "9.7"
+    for value in ["12.6", "86", "283 / 324"]:
+        b.text_frame.add_paragraph().text = value
+    markup = _paired_value_table(a, BBox(37, 315, 374, 210),
+                                 b, BBox(411, 345, 179, 155),
+                                 18.0, 18.0, 1.0)
+    assert markup is not None
+    assert "stroke: none" in markup
+    # header stays above the table; each label shares a row with its value
+    head, table = markup.split("#table", 1)
+    assert "In Millionen SLOC" in head
+    assert "[OpenSolaris:], [9\\.7]," in table
+    assert "[Debian:], [283 / 324]," in table
+
+
+def test_brace_renders_as_stroke_not_filled_bar():
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Pt
+
+    from typstpresenter.convert.cetz import emit_cetz_shape
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.LEFT_BRACE, Pt(382), Pt(298), Pt(24), Pt(188))
+    markup, _ = emit_cetz_shape(shape, "", BBox(382, 298, 24, 188),
+                                probes=False)
+    assert "line(" in markup
+    assert "rect(" not in markup  # no theme-filled bar over the content
+
+
+def test_rotated_absorbed_text_gets_canvas_angle(tmp_path):
+    from pptx import Presentation
+    from pptx.util import Pt
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    label = slide.shapes.add_textbox(Pt(277), Pt(377), Pt(170), Pt(32))
+    label.text_frame.text = "Rahmen (Frame)"
+    label.rotation = 270
+    _, markup = _render_diagram_cluster(
+        [], [("text", label, BBox(277, 377, 170, 32), "s1-e1")],
+        720.0, 18.0, 18.0, tmp_path)
+    assert "angle: 90deg" in markup
+    assert "Rahmen" in markup
 def test_simple_deck_is_idiomatic_and_sane(tmp_path):
     pptx_path = tmp_path / "simple.pptx"
     pptx_path.write_bytes((DATA / "simple.pptx").read_bytes())

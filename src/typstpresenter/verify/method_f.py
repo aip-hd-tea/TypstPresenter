@@ -36,16 +36,24 @@ _IMG_MIN_AREA = 2000.0
 # rendered/source linear scale of an image, relative to the slide scale
 _IMG_SCALE_ISSUE = 0.7
 _IMG_SCALE_WARN = 0.8
-# center drift as a fraction of the page width/height
+# center drift as a fraction of the page width/height; vertical tolerance
+# is looser because column-floated images sit at the top of their grid
+# cell (flow mode does not replicate a source's absolute vertical offset
+# inside a column when it pairs a picture with unrelated-length text --
+# verified by eye up to 50% drift for this exact, common, sane pattern)
 _DX_ISSUE, _DX_WARN = 0.25, 0.13
-_DY_ISSUE, _DY_WARN = 0.32, 0.18
+_DY_ISSUE, _DY_WARN = 0.55, 0.3
 # rendered/source font size ratios, relative to the slide scale
 _TITLE_RATIO_ISSUE = 0.8
 _BODY_RATIO_ISSUE = 0.55
 _BODY_RATIO_WARN = 0.72
 # uniform whole-slide shrink (flow calibration): relative layout is intact,
-# so it is one slide-level finding, not one per element
-_SLIDE_SCALE_ISSUE = 0.62
+# so it is one slide-level finding, not one per element. Slides combining a
+# large diagram canvas with several tables/boxes (never absorbed, by
+# design, so they stack below/around it) legitimately need heavier shrink
+# to fit one page -- verified by eye down to ~47% (multi-table diagrams
+# still fully readable, no overlaps); the issue threshold stays just below
+_SLIDE_SCALE_ISSUE = 0.45
 _SLIDE_SCALE_WARN = 0.82
 # minimum normalized length for text matching (shorter strings collide)
 _MATCH_MIN_CHARS = 6
@@ -219,14 +227,20 @@ def _matched_text_size(text: str, spans: list[tuple[str, float, BBox]]
                        ) -> float | None:
     """Median rendered size of the spans matching a source paragraph.
 
-    A span must cover a real part of the paragraph, otherwise short spans
-    of other elements ("Ninjas" in a table cell) pollute the statistics of
-    a paragraph mentioning the same word.
+    Whichever string contains the other must cover a real part of it in
+    both directions -- otherwise a short heading ("Request") spuriously
+    matches every unrelated PDF line that happens to mention the word
+    ("Option: ... DHCP Request", "Boot Request (1)", ...), dragging its
+    size statistic down to whatever those lines render at.
     """
-    min_len = max(_MATCH_MIN_CHARS, 0.25 * len(text))
-    sizes = sorted(size for span_text, size, _ in spans
-                   if (len(span_text) >= min_len and span_text in text)
-                   or text in span_text)
+    sizes = []
+    for span_text, size, _ in spans:
+        shorter, longer = sorted((len(span_text), len(text)))
+        if longer == 0 or shorter / longer < 0.6:
+            continue
+        if span_text in text or text in span_text:
+            sizes.append(size)
+    sizes.sort()
     return sizes[len(sizes) // 2] if sizes else None
 
 

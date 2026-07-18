@@ -103,6 +103,8 @@ def _space_before_of(pPr) -> tuple[str, float] | None:
 
 def _lst_style_props(shape, level: int) -> dict:
     """Properties from a placeholder's own a:lstStyle."""
+    if not getattr(shape, "has_text_frame", False):
+        return {}
     txBody = shape.text_frame._txBody
     lst = txBody.find(qn("a:lstStyle"))
     if lst is None:
@@ -135,6 +137,11 @@ def _master_txstyle_props(shape, level: int) -> dict:
 
 
 def _inherited_prop(shape, level: int, key: str):
+    # a shape's own lstStyle (common on manually-styled text boxes, not just
+    # placeholders) takes precedence over anything inherited
+    props = _lst_style_props(shape, level)
+    if key in props:
+        return props[key]
     if not getattr(shape, "is_placeholder", False):
         return None
     for ancestor in _inheritance_chain(shape):

@@ -330,6 +330,74 @@ def build_decision_flowchart(path: Path) -> None:
     prs.save(str(path))
 
 
+def build_rotated_shapes(path: Path) -> None:
+    """Level 7: shape rotation (PPTX rot attribute, clockwise degrees)."""
+    from pptx.util import Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])  # title and content
+    slide.shapes.title.text = "Rotated Shapes"
+
+    def add_rotated(col_center, row_center, w, h, deg, label, shape_type=MSO_SHAPE.RECTANGLE):
+        shape = slide.shapes.add_shape(
+            shape_type,
+            Inches(col_center - w / 2), Inches(row_center - h / 2),
+            Inches(w), Inches(h),
+        )
+        shape.rotation = deg
+        shape.text_frame.text = label
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.size = Pt(14)
+        return shape
+
+    add_rotated(2.2, 2.8, 2.0, 1.0, 30, "30")
+    add_rotated(7.2, 2.8, 2.0, 1.0, -45, "-45")
+    add_rotated(4.7, 5.2, 2.5, 1.2, 90, "90", MSO_SHAPE.ROUNDED_RECTANGLE)
+    prs.save(str(path))
+
+
+def build_freeform_shapes(path: Path) -> None:
+    """Level 7: freeform (custGeom) polygons -- a chevron arrow and a star.
+
+    Both are pure straight-edged paths (moveTo/lnTo/close only), the case
+    the emitter draws as an exact CeTZ polygon rather than falling back to
+    the shape's bounding box.
+    """
+    import math
+
+    from pptx.dml.color import RGBColor
+    from pptx.util import Emu, Inches
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Freeform Shapes"
+
+    scale = Emu(Inches(1)) / 1000
+    fb = slide.shapes.build_freeform(start_x=0, start_y=300, scale=scale)
+    fb.add_line_segments([
+        (600, 300), (600, 0), (1000, 500), (600, 1000), (600, 700), (0, 700),
+    ], close=True)
+    arrow = fb.convert_to_shape(origin_x=Inches(1.5), origin_y=Inches(2.5))
+    arrow.fill.solid()
+    arrow.fill.fore_color.rgb = RGBColor(0xC0, 0x50, 0x20)
+    arrow.line.color.rgb = RGBColor(0x40, 0x40, 0x40)
+
+    cx, cy, r_out, r_in = 500, 500, 500, 200
+    pts = []
+    for i in range(10):
+        r = r_out if i % 2 == 0 else r_in
+        angle = -math.pi / 2 + i * math.pi / 5
+        pts.append((round(cx + r * math.cos(angle)), round(cy + r * math.sin(angle))))
+    fb2 = slide.shapes.build_freeform(start_x=pts[0][0], start_y=pts[0][1], scale=scale)
+    fb2.add_line_segments(pts[1:], close=True)
+    star = fb2.convert_to_shape(origin_x=Inches(6.5), origin_y=Inches(2.5))
+    star.fill.solid()
+    star.fill.fore_color.rgb = RGBColor(0x20, 0x80, 0xC0)
+    star.line.color.rgb = RGBColor(0x40, 0x40, 0x40)
+    prs.save(str(path))
+
+
 def build_placeholder_deck(path: Path) -> None:
     """Level 2: real slide layouts; all styling inherited from the master.
 
@@ -566,6 +634,9 @@ BUILDERS = {
     "diagram_styled_shapes": (build_styled_shapes, "diagram-cetz"),
     # autoresearch level 4: 2D decision flowchart with back-edge
     "diagram_decision": (build_decision_flowchart, "diagram-cetz"),
+    # autoresearch level 7: shape rotation, freeform (custGeom) polygons
+    "diagram_rotated": (build_rotated_shapes, "diagram-cetz"),
+    "diagram_freeform": (build_freeform_shapes, "diagram-cetz"),
 }
 
 # diagram cases that additionally get a Fletcher pairing

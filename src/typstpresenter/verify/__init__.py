@@ -25,4 +25,12 @@ at a comparable relative size and region, titles render at their resolved
 source size (centered on title layouts), matched body text is not
 drastically smaller than the source (relative to the slide's uniform
 scale), and hyperlinks survive.
+
+Method D (:mod:`method_d`) checks diagram/connector translation fidelity
+specifically: it compares PPTX autoshapes/connectors against the vector
+paths PyMuPDF extracts from the compiled PDF (shape type, fill/stroke
+color, normalized position/size, connector topology). It is exact-verified
+against the synthetic diagram benchmark corpus (``diagram_*`` cases); on
+real decks it is informational (findings on larger/denser diagram clusters
+land in ``warnings``, not ``issues`` -- see the module docstring).
 """

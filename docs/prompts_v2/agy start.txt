@@ -1,0 +1,7 @@
+Read "docs/prompts_v2/B prompt - improvements.txt", then read file "docs/prompts_v2/C problems.txt".
+Another LLM agent has tried to fix the problems in "docs/prompts_v2/C problems.txt", this is an intermediate state.
+Please continue to improve the code and fix the problems in "docs/prompts_v2/C problems.txt" based on the information in "docs/prompts_v2/B prompt - improvements.txt" and related files.
+
+
+Resume with -c (or command below):
+agy --conversation=fe9b8f4b-7e77-421f-a878-55a9385873e4

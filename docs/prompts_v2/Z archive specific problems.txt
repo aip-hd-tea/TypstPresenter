@@ -1,10 +1,12 @@
+== Nach yy.07.2026
+
 Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
 - Der generierte Type Code verwendet eine alte Konvention von Touying (Jeder Slide ist in eine Funktion gerappt). Verwende die neue Konvention bei jenen, die typst-Headers als Marker für neue Slides verwendet werden, Siehe die Dokumentation von Touying.
 - Das Layout der neuen Slides sieht nicht besonders gut aus. Insbesondere sind die Slide-Inhalte oft sehr nah an der Headerzeile, das heißt Titelzeile des Slides. Überprüfe das.
 - Die Itemized, das heißt Bulletlisten, haben komische Zeichen, ein Fragezeichen mit Rechteck statt einem Bullet Point. Eventuell ist dieses Problem schon bekannt. Hier könnte ein Font Probleme machen.
 - Der Code generiert in tests/results_tmp/showcase sollte *keine* Probes für typst Introspection enthalten (z.B. sowas wie #let tp-node-probe(id), #let tp-label-probe(id, body) = ...) und für mich als Mensch lesbar sein. Diese Introspection-Probes sollten für die internen Testverfahren aber weiterhin verwendet werden. Baue also ein Switch ein, der bei der Generierung von typst-Dateien es möglich machen, minimalen und menschenlesbaren Typed-Code zu generieren und verwende diesen für die Showcase-Dateigenerierung.
 
-
+== Nach xx.07.2026
 Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle Schleife verstanden hast):
 1. Der generierte Code ist nicht wirklich für Menschen editierbar.
 - Benutze statt dem Still im aktuellen Code idiomatische Sprachelemente von Typst und keine absolute Positionierung soweit möglich.
@@ -13,3 +15,52 @@ Spezifische Probleme sind (gehe diese als nächstes an, sobald du die generelle 
 - Mit diesem neuen Kriterium für Codeerzeugung kannst du von einfachen Beispielen zu immer komplizierteren gehen und Auto Research verwenden.
 
 2. Der Code in dem Ordner src/typstpresenter/verify ist nicht besonders gut strukturiert, Gegebenenfalls auch der zugehörige Testcode. Teile den Code eventuell in Subpackages auf und restrukturiere auch den emitter.py um, sodass der Code besser wartbar ist und mehr den Prinzipien von Clean Code entspricht.
+
+
+
+== Nach 17.07.2026
+Die Folien in dem Folder tests/results_tmp/showcase zeigen noch eine Reihe von Fehlern. Typischerweise betrifft das Layout, kleinere Fontgröße als im Original und fehlende Bilder.
+
+Konzentrieren wir uns zuerst auf die Datei tests/results_tmp/showcase/talk_example_a.pptx
+Folie 1: Die Platzierung des Titels in dem erzeugten PDF ist ganz oben, linksbündig und der Font ist kleiner. In dem Original PowerPoint ist der Titel in der Mitte und Font ist erheblich größer. Die Untertitel/weitere Angaben sind relativ zu dem Titel korrekt platziert in dem PDF, aber absolut gesehen an falscher Stelle.
+
+Folie 2: Der Font des Titels in dem PDF ist kleiner als in dem Originalfolie. Das Bild allerdings fehlt völlig!
+
+Folie 3: (Titel: "Title: Text left, Figure right"). Hier fehlt das Bild in der rechten Spalte!
+
+Folie 4: Das Bild der Blume sollte rechts unten sein, stattdessen ist es in der linken Spalte unten, und ca. 35% kleiner. Außerdem sollte Text als auch das Bild die Folie ausfüllen wie im Original. In dem PDF gibt es noch viel Platz in der rechten Spalte.
+
+Folie 5: (Titel: "Title: Text + some table"). Es fehlt der URL-Link unter dem Text "a comparative analysis".
+
+Folien 6+7: Diese Folien sind korrekt übersetzt, prima!
+
+Folie 8: Fast richtig. Allerdings sollten die beiden Bildern (als Ganzes) zentriert sein. Jetzt scheinen sie eher lücksbündig zu sein.
+
+Folie 9: Diese Folie ist eventuell schwierig, automatisch zu übersetzen. In dem Originalfolie gibt es für jeden drei Bilder einen Text (für die ersten zwei je ein Item, für das letzte Bild zwei Items). In der Position entsprechen sich die Bilder und der zugehörige Text, das heißt, sie bilden jeweils eine Zeile. Das ist allerdings nicht durch eine Tabelle erzeugt, sondern durch die absolute Positionierung der Bilder gegenüber dem Text. Man würde das in Typed durch das Layout-Element grid() erreichen. Man müsste allerdings hier in der Abstraktion bilden, und erkennen, dass die Bilder und der Text hier eine Zeile bilden. Fieser Fehler könnte erst später behoben werden, hat eine niedrigere Priorität.
+
+
+
+Bitte schaue sich diese Fehler an und mache folgendes:
+
+1. Versuche erst mal, neue Tests/Benchmarks für die Übersetzungstreue zwischen PowerPoint und Typst zu erstellen, die solche Probleme aufdecken. Dabei geht es hier nicht um die absolute Positionierung Und pixelgenaue Übersetzungstreuer, sondern um eine Entsprechung des Layouts, der Fonts, der relativen Größen und Positionen , alles mit Toleranzen.
+2. Im zweiten Schritt versuche dann, diese Fehler zu fixieren. Zuerst für dieses spezielle File, dann erweitere den Fix durch das Testen anderer pptx Files. Wie üblich, gehe hier in einer Auto-Research-Schleife vor und betrachte immer komplexere Fälle mit jeder weiteren Iteration. Beachte bitte die frühere Anforderung, dass der generierte Typst-Code menschenlesbar und einfach.
+
+
+
+== Am 18.07.2026 um 10:35 Uhr
+
+Die Folien in dem Folder tests/results_tmp/showcase zeigen noch eine Reihe von Fehlern. Bitte fixiere diese.
+Betrachten wir beispielsweise die Datei "tests/results_tmp/showcase/vl02-ibn (OS purposes, CPU-intro, sys calls).pptx".
+Die Foliennummern beziehen sich auf das generierte PDF. In PowerPoint sind die Nummern um eins größer.
+
+Folie 1: ("Was ist richtig?") Der Link "https://bit.ly/ibn_hd" ist in der Originaldatei mit einem grünen Rechteck unterlegt. Dieser ist in der generierten Datei nicht sichtbar.
+
+Folie 2: Diese Abschnittstrennfolie hat als Text nur "Aufgaben der Betriebssysteme". Der Text ist in der Originaldatei zentriert, horizontal und vertikal. In der generierten Datei erscheint er oben, nicht zentriert. Möglicherweise wäre es sinnvoll, eine typst-Funktion zu definieren für die Abschnittstrennfolien. Dann könnte man den Stil leicht und uniform verändern.
+
+
+Folie 3: ("Zwei primäre Aufgaben eines BSs") Diese Folie sieht eigentlich sehr ähnlich wie die Originalfolie aus, so dass es bei Layout, Fontgrößen und so weiter keine Probleme gibt. Allerdings ist nun der Quelltext in typst durchsetzt mit vielen Funktionen, sodass es nicht mehr gut menschenlesbar ist. Probiere, die sich wiederholenden Farben und Stile des Textes in PowerPoint in eine Reihe von wenigen Funktionen von Typst zusammenzufassen und dann diese Funktionen in typst-Quelltext zu verwenden. Analysiere dazu unter anderem diese Folie und schaue, wie man den Quelltext der Folie durch solche Vorabdefinitionen für das gesamte File reduzieren könnte, sodass das Ganze menschenlesbar ist. Die Farben und Fontgrößen müssen nicht identisch sein wie bei PowerPoint, nur ähnlich, wenn man dadurch weniger Farben und Fontgrößen hat, und damit weniger Funktionen. Gehe auch mehrere Dateien durch, um eventuell Definitionen zu erzeugen, die über mehrere Dateien gültig sind, Die man dann in einem wiederverwendbaren File zusammenfasst, die man dann per #include usw. verwenden kann.
+
+Folie 6: ("Famous Aphorisms")
+Das ist hier ein etwas komplizierteres Problem. Die Originalfolie in PowerPoint hat in dem Spruch die Worte „level of indirection" mit Animationen durch die Worte „abstraction layer" ersetzt. Das kann man in Typst u.a. dadurch abbilden, dass man zwei Folien generiert, die erste mit (u.a.) „level of indirection", die zweite mit den Worten „abstraction layer". Vielleicht kennt touying noch andere Ansätze - suche in der Dokumentation. Die aktuell generierte Folie hat die Worte „abstraction layer" unten separat, was wenig Sinn macht. Dieses Problem tritt selten auf, tritt das ganz zum Schluss optional.
+
+Folie 8: ("Komplexität der Betriebssysteme") Hier sind die roten Zahlen in der Auflistung unten um eine Zeile nach oben verschoben. Speziell sollte die Zahl 9.7 auf der gleichen Höhe sein wie "OpenSolaris", 12.6 auf der Höhe von "Linux kernel 2.6.32:" usw.  Das zweite Problem ist, dass der QR-Code oben rechts (ein Bild) gar nicht angezeigt wird, gleichzeitig ist der Link "https://bit.ly/ibn_hd" rechts neben dem Titel der Folie statt dir

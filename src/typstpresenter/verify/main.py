@@ -19,13 +19,28 @@ def verify(
     typ_path: Annotated[Path, typer.Argument(help="Generated *.typ file to check")],
     method: Annotated[str, typer.Option(
         help="a (PDF), b (introspection), both, s (minimal layout sanity), "
-             "or f (structural fidelity, works for any output)")] = "both",
+             "f (structural fidelity, works for any output), or d (diagram/"
+             "connector translation fidelity, informational on real decks)")
+    ] = "both",
 ) -> None:
     """
     Check a generated Typst presentation against its PPTX ground truth.
 
     Exits with code 1 if any issues are found.
     """
+    if method == "d":
+        from typstpresenter.verify.method_d import verify_diagrams
+        from typstpresenter.verify.typst_tools import compile_pdf
+
+        pdf_path = typ_path.with_suffix(".pdf")
+        if not pdf_path.exists():
+            compile_pdf(typ_path, pdf_path)
+        d_report = verify_diagrams(pptx_path, pdf_path)
+        typer.echo(f"--- Method D (diagram/connector fidelity)\n{d_report.summary()}")
+        if not d_report.ok:
+            raise typer.Exit(code=1)
+        return
+
     if method in ("s", "f"):
         failed = False
         if method == "s":
@@ -85,6 +100,7 @@ def showcase(
     from typstpresenter.verify.compare import compare_by_id
     from typstpresenter.verify.corpus import generate_corpus
     from typstpresenter.verify.method_b import run_method_b
+    from typstpresenter.verify.method_d import verify_diagrams
     from typstpresenter.verify.method_f import verify_fidelity
     from typstpresenter.verify.method_s import verify_minimal
     from typstpresenter.verify.typst_tools import TypstError, compile_pdf
@@ -124,10 +140,17 @@ def showcase(
                 compile_pdf(typ_path)
                 s_report = verify_minimal(pptx_path=pptx_path, typ_path=typ_path)
                 f_report = verify_fidelity(pptx_path, typ_path.with_suffix(".pdf"))
+                # informational only: reliable on the synthetic diagram
+                # benchmark, not yet precise enough on dense real decks to
+                # gate the build (see method_d.py's module docstring)
+                d_report = verify_diagrams(pptx_path, typ_path.with_suffix(".pdf"))
                 s_info = (f"  S: {len(s_report.issues)} issues, "
                           f"{len(s_report.warnings)} warnings"
                           f"  F: {len(f_report.issues)} issues, "
-                          f"{len(f_report.warnings)} warnings")
+                          f"{len(f_report.warnings)} warnings"
+                          f"  D: {len(d_report.issues)} issues, "
+                          f"{len(d_report.warnings)} warnings "
+                          f"({d_report.checked_slides} checked)")
 
             typer.echo(f"{typ_path.stem:<50} pdf ok  B: {len(report.issues)} issues, "
                        f"{len(report.warnings)} warnings{s_info}")

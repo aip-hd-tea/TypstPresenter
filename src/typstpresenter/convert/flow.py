@@ -21,8 +21,10 @@ from typstpresenter.convert.cetz import emit_cetz_shape, is_diagram_shape
 from typstpresenter.convert.pptx_inherit import (
     resolve_bullet,
     resolve_font_size_pt,
+    resolve_space_before,
 )
 from typstpresenter.convert.textbody import (
+    PPT_LINE_PITCH_EM,
     autofit_scales,
     paragraph_run_chunks,
     typst_align,
@@ -85,15 +87,35 @@ class FlowBlock:
 
 # ------------------------------------------------------------ inline text --
 
+# Colors that recur across the IBN lecture-slide corpus by a wide margin
+# (measured over every run's character count); text in one of these gets a
+# short named helper (`styles.typ`, imported once per output directory)
+# instead of a fresh `#text(fill: rgb(...))` on every occurrence. One-off
+# colors keep the literal `#text(fill: ...)` call -- not worth a name.
+COLOR_PALETTE: dict[str, str] = {
+    "FF0000": "red",
+    "0070C0": "blue",
+    "424456": "slate",
+    "00B0F0": "cyan",
+    "00B050": "green",
+    "595959": "gray",
+    "7030A0": "purple",
+}
+
+
 def _inline_chunk(text: str, style: tuple, context_size: float,
                   boundary_ok: bool) -> tuple[str, bool]:
     """Render one styled chunk; also report whether the result ends in a
     hash expression (whose parse would continue over a following '(' etc.)."""
     from typstpresenter.convert.textbody import typst_str
 
-    size, bold, italic, underline, rgb, link = style
+    size, bold, italic, underline, rgb, link, highlight = style
 
     def _linked(markup: str, ends_hash: bool) -> tuple[str, bool]:
+        if highlight:
+            markup = (f'#highlight(fill: rgb("#{highlight}"))'
+                      f"[{guard_markup_start(markup)}]")
+            ends_hash = True
         if link:
             return (f"#link({typst_str(link)})"
                     f"[{guard_markup_start(markup)}]", True)
@@ -104,32 +126,51 @@ def _inline_chunk(text: str, style: tuple, context_size: float,
     if underline:
         inner = f"#underline[{guard_markup_start(inner)}]"
         wrapped_hash = True
-    args = []
-    if abs(size - context_size) > 0.26:
-        args.append(f"size: {_round_size(size):g}pt")
-    if rgb:
-        args.append(f'fill: rgb("#{rgb}")')
-    if args:
+    size_override = abs(size - context_size) > 0.26
+    palette_fn = COLOR_PALETTE.get(rgb.upper()) if rgb and not size_override else None
+    if not palette_fn and (size_override or rgb):
+        args = []
+        if size_override:
+            args.append(f"size: {_round_size(size):g}pt")
+        if rgb:
+            args.append(f'fill: rgb("#{rgb}")')
         if bold:
             args.append('weight: "bold"')
         if italic:
             args.append('style: "italic"')
         return _linked(f"#text({', '.join(args)})[{guard_markup_start(inner)}]",
                        True)
-    # pure bold/italic can use native markup -- but only at word boundaries,
-    # otherwise the delimiters do not trigger
+    # pure bold/italic (optionally palette-colored) use native markup --
+    # but only at word boundaries, otherwise the delimiters do not trigger.
+    # A leading '/' right after the opening '*' reads as a block-comment
+    # close ('*/') to Typst's tokenizer, so that case also falls back.
+    star_ok = boundary_ok and not inner.startswith("/")
     if bold and italic:
-        if boundary_ok:
-            return _linked(f"*_{inner}_*", False)
-        return _linked(f"#strong[#emph[{guard_markup_start(inner)}]]", True)
+        if star_ok:
+            core, ends_hash = f"*_{inner}_*", False
+        else:
+            core, ends_hash = f"#strong[#emph[{guard_markup_start(inner)}]]", True
+        if palette_fn:
+            return _linked(f"#{palette_fn}[{guard_markup_start(core)}]", True)
+        return _linked(core, ends_hash)
     if bold:
-        if boundary_ok:
-            return _linked(f"*{inner}*", False)
-        return _linked(f"#strong[{guard_markup_start(inner)}]", True)
+        if star_ok:
+            core, ends_hash = f"*{inner}*", False
+        else:
+            core, ends_hash = f"#strong[{guard_markup_start(inner)}]", True
+        if palette_fn:
+            return _linked(f"#{palette_fn}[{guard_markup_start(core)}]", True)
+        return _linked(core, ends_hash)
     if italic:
         if boundary_ok:
-            return _linked(f"_{inner}_", False)
-        return _linked(f"#emph[{guard_markup_start(inner)}]", True)
+            core, ends_hash = f"_{inner}_", False
+        else:
+            core, ends_hash = f"#emph[{guard_markup_start(inner)}]", True
+        if palette_fn:
+            return _linked(f"#{palette_fn}[{guard_markup_start(core)}]", True)
+        return _linked(core, ends_hash)
+    if palette_fn:
+        return _linked(f"#{palette_fn}[{guard_markup_start(inner)}]", True)
     return _linked(inner, wrapped_hash)
 
 
@@ -195,7 +236,7 @@ def dominant_size(chunk_lists: list[list[tuple[str, tuple]]],
 def _render_text_block(shape, default_size: float, context_size: float,
                        scale: float = 1.0) -> str:
     """A text frame as flowing markup: native lists, plain paragraphs."""
-    font_scale, _ = autofit_scales(shape)
+    font_scale, lnspc_red = autofit_scales(shape)
     font_scale *= scale
     lines: list[str] = []
     in_list = False
@@ -217,13 +258,210 @@ def _render_text_block(shape, default_size: float, context_size: float,
             in_list = True
         else:
             if lines:
-                lines.append("")
+                # plain (non-list) paragraphs keep the source's own
+                # before-spacing instead of a fixed blank-line gap, so a
+                # stack of short paragraphs (e.g. one number per line)
+                # lines up with a neighboring bulleted column instead of
+                # drifting apart under Typst's more generous default
+                # paragraph spacing
+                spc_bef = resolve_space_before(paragraph, shape)
+                gap = None
+                if spc_bef:
+                    kind, value = spc_bef
+                    para_size = _paragraph_size(paragraph, shape, default_size,
+                                                font_scale)
+                    if kind == "pct":
+                        gap = value * PPT_LINE_PITCH_EM * para_size
+                    else:
+                        gap = value * font_scale * (1.0 - lnspc_red)
+                lines.append(f"#v({gap:.2f}pt)" if gap is not None else "")
             line = guard_markup_start(inline)
             if align:
                 line = f"#align({align})[{line}]"
             lines.append(line)
             in_list = False
     return "\n".join(lines)
+
+
+def _paragraph_cell(paragraph, shape, default_size: float,
+                    context_size: float, font_scale: float) -> str:
+    """One paragraph rendered standalone (e.g. as a table cell)."""
+    chunks = paragraph_run_chunks(paragraph, shape, default_size, font_scale,
+                                  breaks=True)
+    if not chunks:
+        return ""
+    inline = _paragraph_inline(chunks, context_size)
+    line = guard_markup_start(inline)
+    bullet = resolve_bullet(paragraph, shape)
+    if bullet:
+        marker = "+" if bullet == "1." else "-"
+        line = f"{marker} {line}"
+    return line
+
+
+def _paired_value_table(shape_a, bbox_a: BBox, shape_b, bbox_b: BBox,
+                        default_size: float, context_size: float,
+                        scale: float) -> str | None:
+    """Merge a label column and a narrow value column into one borderless
+    table so each value sits on the same row as its label.
+
+    Matches a wide text block A (labels, possibly preceded by header
+    lines) beside a narrow block B of short single-line values whose
+    source y positions line up row by row with A's trailing paragraphs.
+    Rendering the two as independent grid columns cannot keep those rows
+    aligned -- Typst's list pitch differs from PowerPoint's -- so a
+    shared table is the only robust encoding.
+    """
+    if bbox_b.w >= 0.6 * bbox_a.w or bbox_b.x < bbox_a.x + 0.3 * bbox_a.w:
+        return None
+    if _vertical_overlap(bbox_a, bbox_b) < 0.5:
+        return None
+    paras_a = [p for p in shape_a.text_frame.paragraphs if p.text.strip()]
+    paras_b = [p for p in shape_b.text_frame.paragraphs if p.text.strip()]
+    n, m = len(paras_b), len(paras_a)
+    if n < 3 or m < n:
+        return None
+    if any(len(p.text.strip()) > 30 for p in paras_b):
+        return None  # long values would wrap: not a value column
+    lead = m - n
+    # B's top edge must sit where A's first paired label is expected;
+    # otherwise the rows do not actually correspond
+    positions = _estimate_paragraph_positions(shape_a, default_size, scale)
+    nonempty = [i for i, p in enumerate(shape_a.text_frame.paragraphs)
+                if p.text.strip()]
+    est_lead = positions[nonempty[lead]][0]
+    dy = bbox_b.y - bbox_a.y
+    if abs(dy - est_lead) > 30:
+        return None
+    font_a, _ = autofit_scales(shape_a)
+    font_b, _ = autofit_scales(shape_b)
+    font_a *= scale
+    font_b *= scale
+    head = "\n\n".join(
+        _paragraph_cell(p, shape_a, default_size, context_size, font_a)
+        for p in paras_a[:lead])
+    rows = []
+    for pa, pb in zip(paras_a[lead:], paras_b):
+        ca = _paragraph_cell(pa, shape_a, default_size, context_size, font_a)
+        cb = _paragraph_cell(pb, shape_b, default_size, context_size, font_b)
+        rows.append(f"  [{ca}], [{cb}],")
+    label_w = max(bbox_b.x - bbox_a.x, 1.0)
+    ratio = bbox_b.w / label_w
+    lines = [head, ""] if head else []
+    lines.append(f"#table(\n  columns: (1fr, {ratio:.2g}fr),\n"
+                 "  stroke: none, inset: (x: 0pt, y: 2.5pt),")
+    lines += rows
+    lines.append(")")
+    return "\n".join(lines)
+
+
+def _estimate_paragraph_positions(
+    shape, default_size: float, scale: float = 1.0,
+) -> list[tuple[float, float]]:
+    """Estimate the (y_start, y_end) of each paragraph within its text shape.
+
+    Uses font size and PowerPoint's typical 1.22 em line pitch to compute
+    how much vertical space each paragraph occupies. Returns coordinates
+    relative to the shape's top edge (bbox.y must be added for absolute y).
+    """
+    from typstpresenter.convert.pptx_inherit import resolve_font_size_pt
+
+    font_scale, _ = autofit_scales(shape)
+    font_scale *= scale
+    positions: list[tuple[float, float]] = []
+    cursor = 0.0
+    for paragraph in shape.text_frame.paragraphs:
+        run = paragraph.runs[0] if paragraph.runs else None
+        size = resolve_font_size_pt(run, paragraph, shape)
+        size = (size if size is not None else default_size) * font_scale
+        text = paragraph.text.strip()
+        if not text:
+            # empty paragraphs still consume about half a line
+            positions.append((cursor, cursor + size * 0.6))
+            cursor += size * 0.6
+            continue
+        # rough estimate: chars per line based on half-em average glyph width
+        bbox_w = (shape.width or 1) / EMU_PER_PT
+        chars_per_line = max(bbox_w / (0.5 * size), 1.0)
+        n_lines = max(1, -(-len(text) // int(chars_per_line)))  # ceil division
+        line_h = size * 1.22
+        para_h = n_lines * line_h
+        positions.append((cursor, cursor + para_h))
+        cursor += para_h
+    return positions
+
+
+def _render_text_segments(
+    shape, default_size: float, context_size: float,
+    image_bboxes: list[BBox], shape_bbox: BBox,
+    scale: float = 1.0,
+) -> list[tuple[BBox, str]]:
+    """Split a text shape into segments aligned with stacked images.
+
+    Each image defines a row; paragraphs are assigned to the image whose
+    y-position is closest. The returned sub-bboxes match the image heights
+    so that the column-grouping logic pairs each image with its text segment.
+
+    *image_bboxes* must be sorted by y and contain at least 2 entries.
+    """
+    para_positions = _estimate_paragraph_positions(shape, default_size, scale)
+    paragraphs = list(shape.text_frame.paragraphs)
+    n_seg = len(image_bboxes)
+    boundaries = [ib.y for ib in image_bboxes]
+
+    # assign each paragraph to a segment based on its absolute y midpoint
+    assignments: list[int] = []
+    for i, (y0, y1) in enumerate(para_positions):
+        abs_mid = shape_bbox.y + (y0 + y1) / 2
+        seg = n_seg - 1
+        for k in range(n_seg - 1):
+            if abs_mid < boundaries[k + 1]:
+                seg = k
+                break
+        assignments.append(seg)
+
+    # render each segment's paragraphs as a separate text block
+    font_scale, _ = autofit_scales(shape)
+    font_scale *= scale
+    segments: list[tuple[BBox, str]] = []
+    for seg_idx in range(n_seg):
+        seg_paras = [paragraphs[i] for i, s in enumerate(assignments) if s == seg_idx]
+        if not seg_paras:
+            continue
+        lines: list[str] = []
+        in_list = False
+        for paragraph in seg_paras:
+            chunks = paragraph_run_chunks(paragraph, shape, default_size,
+                                          font_scale, breaks=True)
+            if not chunks:
+                in_list = False
+                continue
+            inline = _paragraph_inline(chunks, context_size)
+            bullet = resolve_bullet(paragraph, shape)
+            level = paragraph.level
+            align = typst_align(paragraph, shape)
+            if bullet and not align:
+                marker = "+" if bullet == "1." else "-"
+                if not in_list and lines:
+                    lines.append("")
+                lines.append(f"{'  ' * level}{marker} {guard_markup_start(inline)}")
+                in_list = True
+            else:
+                if lines:
+                    lines.append("")
+                line = guard_markup_start(inline)
+                if align:
+                    line = f"#align({align})[{line}]"
+                lines.append(line)
+                in_list = False
+        if not lines:
+            continue
+        # sub-bbox matches the corresponding image's y and height so the
+        # column grouping sees proper row pairs with matching vertical extent
+        ib = image_bboxes[seg_idx]
+        sub_bbox = BBox(shape_bbox.x, ib.y, shape_bbox.w, ib.h)
+        segments.append((sub_bbox, "\n".join(lines)))
+    return segments
 
 
 # ---------------------------------------------------------------- pictures --
@@ -318,7 +556,11 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
     stacking them as flowing paragraphs would garble the picture and blow
     up the slide height.
     """
-    boxes = [b for _, b in cluster] + [b for _, _, b, _ in absorbed]
+    from typstpresenter.convert.cetz import _shape_rotation_deg, effective_bbox
+
+    boxes = ([effective_bbox(shape, b) for shape, b in cluster]
+             + [effective_bbox(sh, b) if k == "text" else b
+                for k, sh, b, _ in absorbed])
     min_x = min(b.x for b in boxes)
     min_y = min(b.y for b in boxes)
     max_x = max(b.x2 for b in boxes)
@@ -331,12 +573,20 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
         # anchor the canvas so labels sticking out do not shift the drawing
         f"  rect((0, 0), ({bounds.w:.2f}, {-bounds.h:.2f}), stroke: none)",
     ]
-    for shape, bbox in cluster:
-        rebased = replace(bbox, x=bbox.x - min_x, y=bbox.y - min_y)
-        markup, _ = emit_cetz_shape(shape, "", rebased, probes=False,
-                                    default_size=default_size)
-        lines.append(markup)
-    for kind, shape, bbox, eid in absorbed:
+    # emit in source document order so overlays keep their z-order (an
+    # annotation rectangle drawn on a screenshot must paint after it)
+    entries = [("shape", shape, bbox, None) for shape, bbox in cluster]
+    entries += list(absorbed)
+    root = entries[0][1]._element.getroottree().getroot()
+    z_order = {el: i for i, el in enumerate(root.iter())}
+    entries.sort(key=lambda e: z_order.get(e[1]._element, 0))
+    for kind, shape, bbox, eid in entries:
+        if kind == "shape":
+            rebased = replace(bbox, x=bbox.x - min_x, y=bbox.y - min_y)
+            markup, _ = emit_cetz_shape(shape, "", rebased, probes=False,
+                                        default_size=default_size)
+            lines.append(markup)
+            continue
         x, y = bbox.x - min_x, bbox.y - min_y
         if kind == "image":
             filename = _write_image_file(shape, eid, media_dir)
@@ -344,24 +594,56 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
                 lines.append(
                     f'  content(({x:.1f}, {-y:.1f}), anchor: "north-west", '
                     f'image("{media_dir.name}/{filename}", width: {bbox.w:.0f}pt))')
+        elif kind == "table":
+            markup = _render_table(shape, default_size, context_size)
+            lines.append(
+                f'  content(({x:.1f}, {-y:.1f}), anchor: "north-west", '
+                f"box(width: {bbox.w:.1f}pt)[\n{markup}\n  ])")
         else:
             markup = _render_text_block(shape, default_size, context_size)
             if markup:
                 # absorbed text must stay inside its source box: match
                 # PowerPoint's line pitch instead of typst's airier default
-                lines.append(
-                    f'  content(({x:.1f}, {-y:.1f}), anchor: "north-west", '
-                    f"box(width: {bbox.w:.1f}pt)[\n"
-                    "#set par(leading: 0.59em, spacing: 0.59em)\n"
-                    f"{markup}\n  ])")
+                boxed = (f"box(width: {bbox.w:.1f}pt)[\n"
+                         "#set par(leading: 0.59em, spacing: 0.59em)\n"
+                         f"{markup}\n  ])")
+                angle = _shape_rotation_deg(shape)
+                if angle:
+                    # rotated label: place by center, same angle convention
+                    # as emit_cetz_shape (negate: PPTX is CW, canvas y flips)
+                    ccx, ccy = x + bbox.w / 2, y + bbox.h / 2
+                    cetz_angle = (-angle) % 360.0
+                    lines.append(
+                        f"  content(({ccx:.1f}, {-ccy:.1f}), "
+                        f"angle: {cetz_angle:.0f}deg, {boxed}")
+                else:
+                    lines.append(
+                        f'  content(({x:.1f}, {-y:.1f}), anchor: "north-west", '
+                        f"{boxed}")
     lines.append("})")
     canvas = "\n".join(lines)
-    if scale != 1.0:
+    # a canvas wider than the page content area would overflow regardless
+    # of the slide-level calibration scale (e.g. a wide absorbed paragraph
+    # next to shapes spread across most of the slide's width): shrink it
+    # to fit as a hard floor, on top of whatever calibration already asked
+    # for
+    available_w = page_w - 2 * PAGE_MARGIN_X
+    fit_scale = min(available_w / bounds.w, 1.0) if bounds.w > 0 else 1.0
+    total_scale = scale * fit_scale
+    if total_scale != 1.0:
         # uniform visual shrink (text included) for overflow calibration
-        canvas = f"scale({scale * 100:.0f}%, reflow: true, {canvas})"
-    if abs(bounds.center[0] - page_w / 2) < page_w * 0.08:
-        return bounds, f"#align(center, block({canvas}))"
-    return bounds, f"#{canvas}"
+        canvas = f"scale({total_scale * 100:.0f}%, reflow: true, {canvas})"
+    # alignment is decided from the shapes' true source position (not the
+    # canvas's own, possibly fitted, on-page footprint), but the returned
+    # bounds must reflect the actual rendered size for callers doing
+    # column/grid layout with it
+    align_cx = bounds.center[0]
+    fitted_bounds = replace(bounds, w=bounds.w * fit_scale, h=bounds.h * fit_scale)
+    if abs(align_cx - page_w / 2) < page_w * 0.08:
+        return fitted_bounds, f"#align(center, block({canvas}))"
+    if align_cx > page_w * 0.6:
+        return fitted_bounds, f"#align(right, block({canvas}))"
+    return fitted_bounds, f"#{canvas}"
 
 
 # ------------------------------------------------------------ slide markup --
@@ -378,11 +660,6 @@ def _is_chrome(shape, page_h: float, bbox: BBox,
     # small ornaments inside the title band (course badges, QR links)
     # decorate every slide's header, they are not content
     if bbox.y2 <= 60 and bbox.h < 50:
-        return True
-    # ... as are small pictures pinned to the top-right corner (QR codes,
-    # logos) that repeat next to the title
-    if (bbox.y < 15 and bbox.x2 > page_w * 0.8 and bbox.w < 130
-            and not shape.has_text_frame):
         return True
     return False
 
@@ -464,6 +741,12 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
                     and _overlap_frac(ib, jb) > 0.5):
                 inset_images.add(ii)
                 labeled.add(jj)
+    # an annotation drawn ON a picture (e.g. a rectangle framing one
+    # component of a screenshot) keeps its position only if the picture
+    # joins the same canvas
+    for ii, (_, _, ib, _) in enumerate(images):
+        if any(_overlap_frac(db, ib) > 0.8 for _, db in diagram_shapes):
+            labeled.add(ii)
     # an image surrounded by several small labels is diagram art (arrows,
     # letters, callouts placed around a screenshot): keep the arrangement
     for ii, (_, _, ib, _) in enumerate(images):
@@ -522,14 +805,98 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
             # small captions hugging the diagram belong to it as well;
             # stacking them in flow detaches them from what they label
             nearby = small and _overlap_frac(bbox, expanded) > 0.5
-            if kind != "table" and (in_area or nearby):
+            # row/column labels flanking the diagram (e.g. "A"/"B"/"C" axis
+            # captions to its left) barely overlap its bounds by area, but
+            # sit right beside it: catch these by vertical containment +
+            # horizontal gap instead of an area fraction
+            flanking = (
+                small
+                and min(bbox.y2, d_bounds.y2) - max(bbox.y, d_bounds.y)
+                    > 0.6 * bbox.h
+                and max(0.0, d_bounds.x - bbox.x2, bbox.x - d_bounds.x2) < 50.0
+            )
+            # a table drawn inside the diagram area (e.g. a stack layout
+            # with a brace and labels around it) is part of the picture:
+            # letting it flow would tear it out below the diagram
+            absorb_table = (
+                kind == "table" and s_bounds is not None
+                and _overlap_frac(bbox, s_bounds) > 0.6)
+            if absorb_table or (kind != "table"
+                                and (in_area or nearby or flanking)):
                 absorbed.append(entry)
             else:
                 remaining.append(entry)
         candidates = remaining
 
     blocks: list[FlowBlock] = []
+    # detect the "stacked images + tall text" pattern: multiple small images
+    # at different y-positions, all in the same x-range, with a single tall
+    # text block adjacent to them spanning most of their combined height.
+    # Split the text into segments aligned with each image for row pairing.
+    split_text_ids: set[str] = set()
+    text_candidates = [(i, c) for i, c in enumerate(candidates) if c[0] == "text"]
+    image_candidates = [(i, c) for i, c in enumerate(candidates) if c[0] == "image"]
+    if len(image_candidates) >= 2 and text_candidates:
+        # find groups of images stacked vertically in the same x-range
+        img_by_x: dict[int, list[int]] = {}
+        for idx, (_, _, ib, _) in image_candidates:
+            # bucket by x (quantized to 30pt) to find columns of images
+            xq = int(ib.x / 30)
+            img_by_x.setdefault(xq, []).append(idx)
+        for xq, img_idxs in img_by_x.items():
+            if len(img_idxs) < 2:
+                continue
+            img_entries = [candidates[i] for i in img_idxs]
+            img_bboxes = [c[2] for c in img_entries]
+            # images must be stacked (non-overlapping y ranges, similar x)
+            sorted_by_y = sorted(img_bboxes, key=lambda b: b.y)
+            x_spread = max(b.x for b in sorted_by_y) - min(b.x for b in sorted_by_y)
+            if x_spread > 50:
+                continue  # not a column
+            combined_y = sorted_by_y[0].y
+            combined_y2 = sorted_by_y[-1].y2
+            combined_h = combined_y2 - combined_y
+            # find a tall text block next to these images
+            for ti, (_, tshape, tbbox, teid) in text_candidates:
+                if tbbox.h < combined_h * 0.6:
+                    continue  # too short to span the images
+                # text must be x-disjoint from the images (side by side)
+                img_x_mid = sum(b.center[0] for b in sorted_by_y) / len(sorted_by_y)
+                txt_x_mid = tbbox.center[0]
+                if abs(img_x_mid - txt_x_mid) < max(sorted_by_y[0].w, tbbox.w) * 0.5:
+                    continue  # overlapping x-range, not side-by-side
+                # the text must vertically overlap the image stack
+                y_overlap = (min(tbbox.y2, combined_y2) - max(tbbox.y, combined_y))
+                if y_overlap < combined_h * 0.5:
+                    continue
+                # pattern matches! split text at image y-positions
+                segments = _render_text_segments(
+                    tshape, default_size, context_size,
+                    sorted_by_y, tbbox, scale)
+                if len(segments) >= 2:
+                    split_text_ids.add(teid)
+                    for sub_bbox, markup in segments:
+                        if markup:
+                            blocks.append(FlowBlock(sub_bbox, "text", markup))
+    # a narrow column of short values whose rows line up with a wider
+    # label column merges into a single borderless table (independent
+    # grid columns cannot keep such rows aligned)
+    paired_ids: set[str] = set()
+    text_cands = [c for c in candidates
+                  if c[0] == "text" and c[3] not in split_text_ids]
+    for a in text_cands:
+        for b in text_cands:
+            if a[3] == b[3] or a[3] in paired_ids or b[3] in paired_ids:
+                continue
+            merged = _paired_value_table(a[1], a[2], b[1], b[2],
+                                         default_size, context_size, scale)
+            if merged:
+                blocks.append(
+                    FlowBlock(_union_bbox([a[2], b[2]]), "text", merged))
+                paired_ids |= {a[3], b[3]}
     for kind, shape, bbox, eid in candidates:
+        if eid in split_text_ids or eid in paired_ids:
+            continue  # already split or merged above
         if kind == "table":
             markup = _render_table(shape, default_size, context_size, scale)
         elif kind == "image":
@@ -648,7 +1015,13 @@ def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
         markup = (f"#align(center, grid(\n  columns: {len(row)}, "
                   f"column-gutter: {gutter:.0f}pt,\n  {cells},\n))")
         return FlowBlock(bounds, "grid", markup)
-    widths = [max(b.bbox.w, 1.0) for b in row]
+    # a cell must be wide enough for its widest occupant: a canvas or
+    # image stacked below a narrow column member (an "extra") would
+    # otherwise be fit-shrunk to the narrow member's share
+    widths = [
+        max([b.bbox.w] + [e.bbox.w for e in extras.get(k, ())] + [1.0])
+        for k, b in enumerate(row)
+    ]
     base = widths[0]
     total = sum(widths)
     usable = content_w - 16.0 * (len(row) - 1)
@@ -663,7 +1036,15 @@ def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
         usable -= offset
     for k, member in enumerate(row):
         cell_pt = usable * widths[k] / total
-        parts = [_fit_to_cell(member, cell_pt)]
+        parts = []
+        # a column that starts deeper than the row's top (e.g. a label
+        # line only present in the neighboring column) keeps that offset,
+        # otherwise its rows would ride up out of alignment with the
+        # column(s) it corresponds to
+        dy = member.bbox.y - bounds.y
+        if dy > 10:
+            parts.append(f"#v({dy:.0f}pt)")
+        parts.append(_fit_to_cell(member, cell_pt))
         parts += [_fit_to_cell(b, cell_pt) for b in
                   sorted(extras.get(k, ()), key=lambda b: b.bbox.y)]
         indented = "\n".join(f"    {line}" for line in
@@ -706,6 +1087,11 @@ def _group_columns(blocks: list[FlowBlock],
                 col = _column_of(cand, row)
                 if col is None or cand.bbox.y >= row_bottom + 40:
                     break
+                # a block that sits entirely below ALL row members belongs
+                # to a separate row, not this column's continuation
+                if not any(_vertical_overlap(cand.bbox, m.bbox) > 0
+                           for m in row):
+                    break
                 extras.setdefault(col, []).append(cand)
                 j += 1
         if len(row) == 1:
@@ -720,6 +1106,38 @@ def has_center_title(slide) -> bool:
     """True for title-layout slides (their title is a CENTER_TITLE box)."""
     return any(_ph_type_name(shape) == "CENTER_TITLE"
                for shape in slide.shapes)
+
+
+def is_section_divider(slide, page_w: float, page_h: float) -> bool:
+    """A slide whose only content is a title, itself centered on the page
+    (horizontally and vertically) -- a "section break" slide built from a
+    custom layout rather than PowerPoint's own Section Header placeholder
+    type (which `has_center_title` already covers)."""
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+
+    from typstpresenter.convert.pptx_inherit import resolve_alignment, resolve_anchor
+    from typstpresenter.verify.pptx_geometry import iter_flat_shapes
+
+    title = slide.shapes.title
+    if title is None or not getattr(title, "has_text_frame", False):
+        return False
+    if not title.text_frame.text.strip():
+        return False
+    if has_center_title(slide):
+        return False
+    for _shape, _bbox in _content_text_shapes(slide, page_h, page_w):
+        return False
+    for shape, bbox in iter_flat_shapes(slide.shapes):
+        if (shape == title or _is_chrome(shape, page_h, bbox, page_w)
+                or _off_page(bbox, page_w, page_h)):
+            continue
+        return False
+    paragraph = next((p for p in title.text_frame.paragraphs if p.text.strip()),
+                      None)
+    if paragraph is None:
+        return False
+    return (resolve_alignment(paragraph, title) == PP_ALIGN.CENTER
+            and resolve_anchor(title) == MSO_ANCHOR.MIDDLE)
 
 
 def slide_title_size(slide, fallback: float = 40.0) -> float:
@@ -765,7 +1183,10 @@ def slide_title_link(slide) -> str | None:
 
 def deck_title_size(prs) -> float | None:
     """Most common resolved title size of the content slides (title-layout
-    slides excluded); sizes the theme's heading preamble."""
+    and section-divider slides excluded); sizes the theme's heading
+    preamble."""
+    page_w = prs.slide_width / EMU_PER_PT
+    page_h = prs.slide_height / EMU_PER_PT
     weights: Counter[float] = Counter()
     for slide in prs.slides:
         title = slide.shapes.title
@@ -775,18 +1196,67 @@ def deck_title_size(prs) -> float | None:
             continue
         if not title.text_frame.text.strip():
             continue
+        if is_section_divider(slide, page_w, page_h):
+            continue
         weights[slide_title_size(slide)] += 1
     if not weights:
         return None
     return weights.most_common(1)[0][0]
 
 
+def _title_trailing_badge(slide) -> tuple[str, str] | None:
+    """Split off a highlighted "badge" line (e.g. a link) that the source
+    glues under the title with a line break, so it renders as its own line
+    below the heading instead of being joined into the same line."""
+    from pptx.oxml.ns import qn
+
+    from typstpresenter.convert.textbody import _run_highlight, run_style
+
+    title = slide.shapes.title
+    if title is None or not getattr(title, "has_text_frame", False):
+        return None
+    paragraphs = title.text_frame.paragraphs
+    if len(paragraphs) != 1:
+        return None
+    paragraph = paragraphs[0]
+    children = list(paragraph._p)
+    br_positions = [i for i, c in enumerate(children) if c.tag == qn("a:br")]
+    if not br_positions:
+        return None
+    split = br_positions[-1]
+    run_iter = iter(paragraph.runs)
+    before, after = [], []
+    for i, child in enumerate(children):
+        if child.tag == qn("a:r"):
+            run = next(run_iter)
+            (before if i < split else after).append(run)
+    if not before or not after or not all(_run_highlight(r) for r in after):
+        return None
+    heading_text = "".join(r.text for r in before).strip()
+    trailing_text = "".join(r.text for r in after).strip()
+    if not heading_text or not trailing_text:
+        return None
+    default_size = slide_title_size(slide)
+    style = run_style(after[0], paragraph, title, default_size)
+    markup, _ = _inline_chunk(trailing_text, style, style[0], True)
+    return heading_text, markup
+
+
 def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
                       media_dir: Path, default_size: float,
                       doc_size: float, scale: float = 1.0,
                       calibration_marker: bool = False,
-                      heading_size: float | None = None) -> list[str]:
-    """The complete markup of one slide (heading + flowing content)."""
+                      heading_size: float | None = None,
+                      trailing_marker: str = "") -> list[str]:
+    """The complete markup of one slide (heading + flowing content).
+
+    ``trailing_marker``, if set, is extra markup (the deck-end calibration
+    sentinel) that must land *inside* this slide's own content -- appending
+    it as bare top-level markup after a bracket-scoped slide (title-slide,
+    centered-slide) does not keep it on that slide's last page; touying
+    treats it as new content and starts an extra, duplicated page. Only the
+    deck's last slide is ever called with a non-empty value.
+    """
     from typstpresenter.convert.textbody import typst_str
 
     from typstpresenter.convert.emitter import slide_title_text
@@ -795,7 +1265,15 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
     if title and has_center_title(slide):
         return _title_slide_markup(slide, slide_index, title, page_w, page_h,
                                    media_dir, default_size, doc_size, scale,
-                                   calibration_marker)
+                                   calibration_marker, trailing_marker)
+    if title and is_section_divider(slide, page_w, page_h):
+        return _section_divider_markup(slide, slide_index, title, scale,
+                                       calibration_marker, trailing_marker)
+    badge_markup = None
+    if title:
+        split = _title_trailing_badge(slide)
+        if split:
+            title, badge_markup = split
     body: list[str] = []
     heading = escape_flow(title) if title else ""
     if title:
@@ -809,6 +1287,9 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
             heading = f"#link({typst_str(link)})[{heading}]"
     body.append(f"== {heading}" if heading else "== ")
     body.append("")
+    if badge_markup:
+        body.append(badge_markup)
+        body.append("")
     if calibration_marker:
         # temporary, invisible: lets `typst query` report the page each
         # slide starts on; the final output is emitted without markers.
@@ -857,21 +1338,30 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
         body += ["#block(width: 100%)[", set_line, ""] + content + ["]", ""]
     else:
         body += content
+    if trailing_marker:
+        body.append(trailing_marker)
     return body
 
 
 def _title_slide_markup(slide, slide_index: int, title: str, page_w: float,
                         page_h: float, media_dir: Path, default_size: float,
                         doc_size: float, scale: float,
-                        calibration_marker: bool) -> list[str]:
+                        calibration_marker: bool,
+                        trailing_marker: str = "") -> list[str]:
     """A CENTER_TITLE slide as `#title-slide[..]`: big centered title, the
     remaining content (subtitle, authors, date) centered below it."""
+    from typstpresenter.convert.textbody import typst_str
+
     title_size = _round_size(slide_title_size(slide) * scale)
     body = ["#title-slide["]
     if calibration_marker:
         body.append(f"  #place(hide(context metadata((s: {slide_index}, "
                     "p: here().position().page))))")
-    body.append(f"  #text(size: {title_size:g}pt)[{escape_flow(title)}]")
+    heading = f"#text(size: {title_size:g}pt)[{escape_flow(title)}]"
+    link = slide_title_link(slide)
+    if link:
+        heading = f"#link({typst_str(link)})[{heading}]"
+    body.append(f"  {heading}")
     body.append("")
 
     chunk_lists = [
@@ -888,6 +1378,32 @@ def _title_slide_markup(slide, slide_index: int, title: str, page_w: float,
                                    scale):
         body.append(block.markup)
         body.append("")
+    if trailing_marker:
+        body.append(f"  {trailing_marker}")
+    body += ["]", ""]
+    return body
+
+
+def _section_divider_markup(slide, slide_index: int, title: str, scale: float,
+                            calibration_marker: bool,
+                            trailing_marker: str = "") -> list[str]:
+    """A section-break slide: big bold title, centered on the page. Uses
+    touying's `centered-slide` (from `themes.simple`) so the style stays
+    uniform and easy to re-theme in one place."""
+    from typstpresenter.convert.textbody import typst_str
+
+    title_size = _round_size(slide_title_size(slide) * scale)
+    body = ["#centered-slide["]
+    if calibration_marker:
+        body.append(f"  #place(hide(context metadata((s: {slide_index}, "
+                    "p: here().position().page))))")
+    heading = f'#text(size: {title_size:g}pt, weight: "bold")[{escape_flow(title)}]'
+    link = slide_title_link(slide)
+    if link:
+        heading = f"#link({typst_str(link)})[{heading}]"
+    body.append(f"  {heading}")
+    if trailing_marker:
+        body.append(f"  {trailing_marker}")
     body += ["]", ""]
     return body
 
