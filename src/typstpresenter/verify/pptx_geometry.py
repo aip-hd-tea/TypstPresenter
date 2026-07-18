@@ -31,16 +31,36 @@ def is_picture(shape) -> bool:
     Pictures inserted into a content placeholder keep shape_type
     PLACEHOLDER, but their XML element is a ``p:pic`` like any picture.
     Movies are ``p:pic`` too; they render as their poster frame.
+    OLE control objects and graphic frames containing OLE objects often
+    contain a nested preview image as a p:pic/a:blip.
     """
     from pptx.oxml.ns import qn
 
     if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
         return True
-    return shape.element.tag == qn("p:pic")
+    if shape.element.tag == qn("p:pic"):
+        return True
+
+    is_ole = False
+    if shape.shape_type == MSO_SHAPE_TYPE.OLE_CONTROL_OBJECT:
+        is_ole = True
+    elif shape.element.tag.endswith("graphicFrame") and "oleObj" in shape.element.xml:
+        is_ole = True
+
+    if is_ole:
+        try:
+            if list(shape.element.iter(qn("a:blip"))):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def picture_image(shape):
-    """The Image part of a picture shape (a movie's poster frame), or None."""
+    """The Image part of a picture shape (a movie's poster frame, an OLE
+    preview image), or None."""
+    from pptx.oxml.ns import qn
+
     try:
         return shape.image
     except (AttributeError, ValueError, KeyError):
@@ -48,7 +68,25 @@ def picture_image(shape):
     try:
         return shape.poster_frame
     except AttributeError:
-        return None
+        pass
+
+    is_ole = False
+    if shape.shape_type == MSO_SHAPE_TYPE.OLE_CONTROL_OBJECT:
+        is_ole = True
+    elif shape.element.tag.endswith("graphicFrame") and "oleObj" in shape.element.xml:
+        is_ole = True
+
+    if is_ole:
+        try:
+            for blip in shape.element.iter(qn("a:blip")):
+                rId = blip.get(qn("r:embed"))
+                if rId and rId in shape.part.related_parts:
+                    part = shape.part.related_parts[rId]
+                    if hasattr(part, "image"):
+                        return part.image
+        except Exception:
+            pass
+    return None
 
 
 def _kind_of(shape) -> ElementKind:

@@ -547,7 +547,10 @@ def _render_table(shape, default_size: float, context_size: float,
 def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
                             page_w: float, default_size: float,
                             context_size: float, media_dir: Path,
-                            scale: float = 1.0) -> tuple[BBox, str]:
+                            scale: float = 1.0,
+                            slide_index: int = 0,
+                            cluster_index: int = 0,
+                            canvas_markers: bool = False) -> tuple[BBox, str]:
     """Diagram shapes of a slide, plus text/picture shapes lying in the
     diagram area ("absorbed"), as one flow-embedded CeTZ canvas.
 
@@ -573,6 +576,20 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
         # anchor the canvas so labels sticking out do not shift the drawing
         f"  rect((0, 0), ({bounds.w:.2f}, {-bounds.h:.2f}), stroke: none)",
     ]
+    if canvas_markers:
+        available_w = page_w - 2 * PAGE_MARGIN_X
+        fit_scale = min(available_w / bounds.w, 1.0) if bounds.w > 0 else 1.0
+        total_scale = scale * fit_scale
+        from typstpresenter.verify.pptx_geometry import element_id
+        shape_ids = [element_id(slide_index, shape.shape_id) for shape, _ in cluster]
+        for kind, sh, _, eid in absorbed:
+            shape_ids.append(eid)
+        shapes_str = ", ".join(f'"{sid}"' for sid in shape_ids)
+        lines.append(
+            f'  content((0, 0), [ #context metadata((kind: "canvas", id: "s{slide_index}-c{cluster_index}", '
+            f'page: here().position().page, x: here().position().x.pt(), y: here().position().y.pt(), '
+            f'w: {bounds.w * total_scale:.2f}, h: {bounds.h * total_scale:.2f}, shapes: ({shapes_str},)))<tp-canvas> ])'
+        )
     # emit in source document order so overlays keep their z-order (an
     # annotation rectangle drawn on a screenshot must paint after it)
     entries = [("shape", shape, bbox, None) for shape, bbox in cluster]
@@ -646,6 +663,208 @@ def _render_diagram_cluster(cluster: list[tuple], absorbed: list[tuple],
     return fitted_bounds, f"#{canvas}"
 
 
+def _cluster_centers(coords: list[float], tolerance: float = 15.0) -> list[float]:
+    """Cluster 1D coordinates by tolerance, returning sorted cluster means."""
+    if not coords:
+        return []
+    coords = sorted(coords)
+    clusters = [[coords[0]]]
+    for c in coords[1:]:
+        if c - clusters[-1][-1] <= tolerance:
+            clusters[-1].append(c)
+        else:
+            clusters.append([c])
+    return [sum(cl) / len(cl) for cl in clusters]
+
+
+def _grid_index(coord: float, centers: list[float]) -> int:
+    return min(range(len(centers)), key=lambda i: abs(centers[i] - coord))
+
+
+def _spacing(centers: list[float], extents: dict[int, float]) -> float:
+    if len(centers) <= 1:
+        return 50.0
+    gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+    return sum(gaps) / len(gaps)
+
+
+def _connector_endpoints(shape, bbox: BBox) -> tuple[tuple[float, float], tuple[float, float]]:
+    from typstpresenter.verify.geometry import EMU_PER_PT
+    from typstpresenter.convert.cetz import _shape_flips
+    try:
+        bx = shape.begin_x / EMU_PER_PT
+        by = shape.begin_y / EMU_PER_PT
+        ex = shape.end_x / EMU_PER_PT
+        ey = shape.end_y / EMU_PER_PT
+        return (bx, by), (ex, ey)
+    except Exception:
+        pass
+    flip_h, flip_v = _shape_flips(shape)
+    x1, y1, x2, y2 = bbox.x, bbox.y, bbox.x2, bbox.y2
+    bx, ex = (x2, x1) if flip_h else (x1, x2)
+    by, ey = (y2, y1) if flip_v else (y1, y2)
+    return (bx, by), (ex, ey)
+
+
+def _detect_fletcher_diagram(diagram_shapes: list[tuple], absorbed: list[tuple],
+                             page_w: float, default_size: float, context_size: float,
+                             media_dir: Path, scale: float, slide_index: int,
+                             canvas_markers: bool) -> FlowBlock | None:
+    from pptx.enum.shapes import MSO_SHAPE_TYPE, MSO_SHAPE
+    from typstpresenter.verify.geometry import BBox
+    from typstpresenter.convert.cetz import _cetz_label_markup, _shape_flips
+    from typstpresenter.convert.pptx_style import shape_fill_rgb, shape_line_rgb, shape_line_width_pt
+
+    nodes = []
+    connectors = []
+    
+    # Separate nodes and connectors in diagram_shapes
+    for shape, bbox in diagram_shapes:
+        is_conn = (shape.shape_type == MSO_SHAPE_TYPE.LINE
+                   or shape.element.tag.endswith("}cxnSp"))
+        if is_conn:
+            connectors.append((shape, bbox))
+        else:
+            nodes.append((shape, bbox))
+            
+    # And text blocks in absorbed
+    has_image_or_table = False
+    for kind, shape, bbox, eid in absorbed:
+        if kind in ("image", "table"):
+            has_image_or_table = True
+        elif kind == "text":
+            nodes.append((shape, bbox))
+            
+    if has_image_or_table or len(nodes) < 2 or len(connectors) < 1:
+        return None
+        
+    # Flowchart node heuristics to prevent misclassifying complex slide layouts
+    node_heights = [b.h for _, b in nodes]
+    node_widths = [b.w for _, b in nodes]
+    if max(node_heights) >= 150.0 or max(node_widths) >= 250.0:
+        return None
+    if max(node_heights) / min(node_heights) >= 1.8:
+        return None
+        
+    # Cluster coordinate centers
+    col_centers = _cluster_centers([b.center[0] for _, b in nodes])
+    row_centers = _cluster_centers([b.center[1] for _, b in nodes])
+    
+    if len(col_centers) < 1 or len(row_centers) < 1:
+        return None
+        
+    # Map each node to its grid cell
+    cell_of = {}
+    cells = set()
+    for shape, bbox in nodes:
+        col = _grid_index(bbox.center[0], col_centers)
+        row = _grid_index(bbox.center[1], row_centers)
+        if (col, row) in cells:
+            return None  # Overlap, fallback to CeTZ
+        cells.add((col, row))
+        cell_of[shape.shape_id] = (col, row)
+        
+    # Calculate spacing
+    col_widths = {}
+    row_heights = {}
+    for shape, bbox in nodes:
+        col, row = cell_of[shape.shape_id]
+        col_widths[col] = max(col_widths.get(col, 0.0), bbox.w)
+        row_heights[row] = max(row_heights.get(row, 0.0), bbox.h)
+    
+    spacing_x = _spacing(col_centers, col_widths)
+    spacing_y = _spacing(row_centers, row_heights)
+    
+    # Map connectors to edges
+    edges = []
+    for shape, bbox in connectors:
+        # get endpoints
+        pts = _connector_endpoints(shape, bbox)
+        if pts is None:
+            continue
+        (bx, by), (ex, ey) = pts
+        
+        # nearest nodes by center distance
+        node_a = min(nodes, key=lambda n: (n[1].center[0] - bx)**2 + (n[1].center[1] - by)**2)
+        node_b = min(nodes, key=lambda n: (n[1].center[0] - ex)**2 + (n[1].center[1] - ey)**2)
+        
+        if node_a[0] == node_b[0]:
+            continue
+            
+        (col_a, row_a) = cell_of[node_a[0].shape_id]
+        (col_b, row_b) = cell_of[node_b[0].shape_id]
+        
+        corner = None
+        if col_a != col_b and row_a != row_b:
+            leaves_horizontally = abs(bx - node_a[1].center[0]) >= node_a[1].w / 2 - 2
+            corner = (col_b, row_a) if leaves_horizontally else (col_a, row_b)
+            
+        edges.append((col_a, row_a, corner, col_b, row_b))
+        
+    # Emit Fletcher markup
+    lines = [
+        "fletcher.diagram(",
+        "  node-inset: 0pt,",
+        f"  spacing: ({spacing_x * scale:.1f}pt, {spacing_y * scale:.1f}pt),",
+        "  node-stroke: 0.75pt,"
+    ]
+    
+    # Add nodes
+    for shape, bbox in nodes:
+        col, row = cell_of[shape.shape_id]
+        is_diamond = False
+        is_oval = False
+        try:
+            if hasattr(shape, "auto_shape_type"):
+                if shape.auto_shape_type == MSO_SHAPE.DIAMOND:
+                    is_diamond = True
+                elif shape.auto_shape_type == MSO_SHAPE.OVAL:
+                    is_oval = True
+        except ValueError:
+            pass
+            
+        if is_diamond:
+            shape_arg = "shape: fletcher.shapes.diamond.with(fit: 1)"
+        elif is_oval:
+            shape_arg = "shape: fletcher.shapes.circle"
+        else:
+            shape_arg = "corner-radius: 4pt"
+        w, h = (bbox.w / 2, bbox.h / 2) if is_diamond else (bbox.w, bbox.h)
+        
+        # Label text
+        label_w = max(bbox.w - 7.2, 7.2)
+        label = _cetz_label_markup(shape, "", probes=False, default_size=default_size, label_w=label_w)
+        
+        # Styling
+        fill_rgb = shape_fill_rgb(shape)
+        stroke_rgb = shape_line_rgb(shape) or "000000"
+        thickness = shape_line_width_pt(shape)
+        
+        style_args = [shape_arg]
+        if fill_rgb:
+            style_args.append(f'fill: rgb("#{fill_rgb}")')
+        if stroke_rgb:
+            style_args.append(f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {thickness:g}pt)')
+            
+        lines.append(
+            f"  node(({col}, {row}), [{label}], width: {w * scale:.2f}pt, height: {h * scale:.2f}pt, {', '.join(style_args)}),"
+        )
+        
+    # Add edges
+    for col_a, row_a, corner, col_b, row_b in edges:
+        via = f"({corner[0]}, {corner[1]}), " if corner else ""
+        lines.append(
+            f'  edge(({col_a}, {row_a}), {via}({col_b}, {row_b}), "-|>"),'
+        )
+        
+    lines.append(")")
+    markup = f"#align(center,\n" + "\n".join(f"  {line}" for line in lines) + "\n)"
+    
+    # Union bbox for the flow block
+    bounds = _union_bbox([b for _, b in nodes] + [b for _, b in connectors])
+    return FlowBlock(bounds, "fletcher", markup)
+
+
 # ------------------------------------------------------------ slide markup --
 
 def _is_chrome(shape, page_h: float, bbox: BBox,
@@ -682,7 +901,8 @@ def _overlap_frac(bbox: BBox, bounds: BBox) -> float:
 
 def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
                       media_dir: Path, default_size: float,
-                      context_size: float, scale: float = 1.0) -> list[FlowBlock]:
+                      context_size: float, scale: float = 1.0,
+                      canvas_markers: bool = False) -> list[FlowBlock]:
     """Classify and render the content shapes of one slide (title excluded)."""
     from typstpresenter.verify.pptx_geometry import (
         element_id,
@@ -906,21 +1126,28 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
         if markup:
             blocks.append(FlowBlock(bbox, kind, markup))
     if diagram_shapes or absorbed:
-        bounds, markup = _render_diagram_cluster(
+        fletcher_block = _detect_fletcher_diagram(
             diagram_shapes, absorbed, page_w, default_size, context_size,
-            media_dir, scale)
-        # a decoration-only canvas (thin brackets/arrows, sparse strips)
-        # lying across the text columns it decorates would force those
-        # columns to stack; losing the decoration beats halving the slide
-        kernel_text = any(
-            getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
-            for sh, _ in diagram_shapes)
-        thin = bounds.w < 80 or bounds.h < 40
-        droppable = (sparse_kernel or thin) and not kernel_text and not absorbed
-        conflicts = droppable and any(
-            _decoration_conflict(bounds, b.bbox) for b in blocks)
-        if not conflicts:
-            blocks.append(FlowBlock(bounds, "diagram", markup))
+            media_dir, scale, slide_index, canvas_markers)
+        if fletcher_block is not None:
+            blocks.append(fletcher_block)
+        else:
+            bounds, markup = _render_diagram_cluster(
+                diagram_shapes, absorbed, page_w, default_size, context_size,
+                media_dir, scale, slide_index=slide_index, cluster_index=0,
+                canvas_markers=canvas_markers)
+            # a decoration-only canvas (thin brackets/arrows, sparse strips)
+            # lying across the text columns it decorates would force those
+            # columns to stack; losing the decoration beats halving the slide
+            kernel_text = any(
+                getattr(sh, "has_text_frame", False) and sh.text_frame.text.strip()
+                for sh, _ in diagram_shapes)
+            thin = bounds.w < 80 or bounds.h < 40
+            droppable = (sparse_kernel or thin) and not kernel_text and not absorbed
+            conflicts = droppable and any(
+                _decoration_conflict(bounds, b.bbox) for b in blocks)
+            if not conflicts:
+                blocks.append(FlowBlock(bounds, "diagram", markup))
     # a picture or note box floated in the empty right portion of a wide
     # text box is a side figure: narrow the text's grouping bbox so both
     # form columns instead of the floater being stacked below the text
@@ -942,7 +1169,7 @@ def flow_slide_blocks(slide, slide_index: int, page_w: float, page_h: float,
             txt_block.bbox = replace(tb, w=new_w)
 
     blocks.sort(key=lambda b: (b.bbox.y, b.bbox.x))
-    return _group_columns(blocks, page_w - 2 * PAGE_MARGIN_X)
+    return _group_columns(blocks, page_w - 2 * PAGE_MARGIN_X, scale=scale)
 
 
 def _decoration_conflict(canvas: BBox, other: BBox) -> bool:
@@ -1002,7 +1229,7 @@ def _fit_to_cell(block: FlowBlock, cell_pt: float) -> str:
 
 
 def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
-                content_w: float) -> FlowBlock:
+                content_w: float, scale: float = 1.0) -> FlowBlock:
     row = sorted(row, key=lambda b: b.bbox.x)
     all_blocks = list(row) + [b for cell in extras.values() for b in cell]
     bounds = _union_bbox([b.bbox for b in all_blocks])
@@ -1031,7 +1258,7 @@ def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
     # leading column, so its horizontal placement matches the source
     offset = bounds.x - PAGE_MARGIN_X
     if offset > 40:
-        columns = f"{offset:.0f}pt, " + columns
+        columns = f"{offset * scale:.0f}pt, " + columns
         cells.append("  [],")
         usable -= offset
     for k, member in enumerate(row):
@@ -1043,7 +1270,7 @@ def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
         # column(s) it corresponds to
         dy = member.bbox.y - bounds.y
         if dy > 10:
-            parts.append(f"#v({dy:.0f}pt)")
+            parts.append(f"#v({dy * scale:.0f}pt)")
         parts.append(_fit_to_cell(member, cell_pt))
         parts += [_fit_to_cell(b, cell_pt) for b in
                   sorted(extras.get(k, ()), key=lambda b: b.bbox.y)]
@@ -1056,7 +1283,7 @@ def _row_markup(row: list[FlowBlock], extras: dict[int, list[FlowBlock]],
 
 
 def _group_columns(blocks: list[FlowBlock],
-                   content_w: float) -> list[FlowBlock]:
+                   content_w: float, scale: float = 1.0) -> list[FlowBlock]:
     """Merge side-by-side blocks into one #grid block (columns layout).
 
     Blocks that share most of their vertical range but occupy disjoint
@@ -1097,7 +1324,7 @@ def _group_columns(blocks: list[FlowBlock],
         if len(row) == 1:
             merged.append(row[0])
         else:
-            merged.append(_row_markup(row, extras, content_w))
+            merged.append(_row_markup(row, extras, content_w, scale=scale))
         i = j if j > i + 1 else i + 1
     return merged
 
@@ -1246,6 +1473,7 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
                       media_dir: Path, default_size: float,
                       doc_size: float, scale: float = 1.0,
                       calibration_marker: bool = False,
+                      canvas_markers: bool = False,
                       heading_size: float | None = None,
                       trailing_marker: str = "") -> list[str]:
     """The complete markup of one slide (heading + flowing content).
@@ -1315,7 +1543,7 @@ def flow_slide_markup(slide, slide_index: int, page_w: float, page_h: float,
     prev: FlowBlock | None = None
     for block in flow_slide_blocks(slide, slide_index, page_w, page_h,
                                    media_dir, default_size, context_size,
-                                   scale):
+                                   scale, canvas_markers=canvas_markers):
         # preserve deliberate vertical whitespace of the source layout
         # (sparse slides place content low on purpose); the reference is
         # where flow content normally starts (below the heading, if any)

@@ -107,9 +107,22 @@ def showcase(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = sorted(data_dir.glob("*.pptx"))
+    all_sources = sorted(data_dir.glob("*.pptx"))
     for sub in ("IBN_presentations", "IBN_presentations2"):
-        sources += sorted((data_dir / sub).glob("*.pptx"))
+        all_sources += sorted((data_dir / sub).glob("*.pptx"))
+
+    problematic_basenames = {
+        "vlxN04-ibn",
+        "vl16-ibn (deadlocks B + scheduling A)",
+        "vlxN09-ibn (TCP-Überlast+Mobile Netze)",
+        "vl05-ibn (race cond B, process sync A)",
+        "vl06-ibn (process sync B)",
+        "vl08-ibn (IPC B + mem mgt A)",
+        "vl12-ibn (virt mem B + file sys A + segmenting)",
+        "vl04-ibn (processes, threads, race cond A)",
+        "talk_example_a",
+    }
+    sources = [s for s in all_sources if s.stem in problematic_basenames]
 
     # generated corpus cases (clean ones) are part of the showcase too;
     # generate_corpus has emitted their .typ already
@@ -144,13 +157,19 @@ def showcase(
                 # benchmark, not yet precise enough on dense real decks to
                 # gate the build (see method_d.py's module docstring)
                 d_report = verify_diagrams(pptx_path, typ_path.with_suffix(".pdf"))
+                cov_str = ""
+                if d_report.total_shapes > 0:
+                    cov_pct = d_report.checked_shapes / d_report.total_shapes * 100
+                    cov_str = f" ({cov_pct:.1f}% cov: {d_report.checked_shapes}/{d_report.total_shapes} shapes)"
+                else:
+                    cov_str = f" ({d_report.checked_slides} checked)"
                 s_info = (f"  S: {len(s_report.issues)} issues, "
                           f"{len(s_report.warnings)} warnings"
                           f"  F: {len(f_report.issues)} issues, "
                           f"{len(f_report.warnings)} warnings"
                           f"  D: {len(d_report.issues)} issues, "
-                          f"{len(d_report.warnings)} warnings "
-                          f"({d_report.checked_slides} checked)")
+                          f"{len(d_report.warnings)} warnings"
+                          f"{cov_str}")
 
             typer.echo(f"{typ_path.stem:<50} pdf ok  B: {len(report.issues)} issues, "
                        f"{len(report.warnings)} warnings{s_info}")

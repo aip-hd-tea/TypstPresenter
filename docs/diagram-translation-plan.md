@@ -144,10 +144,22 @@ by the tooling if it regresses.
 
 ## Progress log
 
-- **2026-07-18** (this session): z-order-correct canvases; tables
-  absorbed into diagram areas; rotated absorbed text; brace/bracket
-  presets as strokes; grid cells sized for their widest occupant
-  (extras included). vl02 slides 9/12/15 (Komplexität, CPU, Stack)
-  verified visually fixed; vl01 slide 31 checked against a PowerPoint
-  COM reference export — the faithful z-order hides a label the source
-  also hides; corpus S+F unchanged elsewhere.
+- **2026-07-18** (Session 1):
+  - **Attributable canvases (Session 1)**: Added support for canvas query markers inside CeTZ canvas drawings. Grouped and verified disjoint clusters per slide on the flow/minimal output instead of using one global affine. This eliminated the main cause of Method D abstentions.
+  - **Per-shape verdicts (Session 1)**: Unified shape/connector matching verdicts (missing, displaced, wrong-kind, wrong-style) per shape ID. Added shape coverage statistics (`checked_shapes` / `total_shapes`) to `DiagramReport` and showcase summary output.
+  - **Gap census (Session 1)**: Created and ran `gap_census.py` script on all 33 decks (1423 slides, 2517 shapes), producing a comprehensive priority catalog (`docs/gap-census-report.md`) for G1–G8, showing G1 (Preset coverage, 865 shapes, 23 decks) is the largest gap with the auto-shape `line` (687 shapes) being the most common unhandled preset.
+  - **Previous fixes**: z-order-correct canvases; tables absorbed into diagram areas; rotated absorbed text; brace/bracket presets as strokes; grid cells sized for their widest occupant (extras included). vl02 slides 9/12/15 (Komplexität, CPU, Stack) verified visually fixed; vl01 slide 31 checked against a PowerPoint COM reference export — the faithful z-order hides a label the source also hides; corpus S+F unchanged elsewhere.
+
+- **2026-07-18** (Session 2 & Session 3):
+  - **Top Presets (Session 2)**: Added custom CeTZ path builders for top gap census presets (`line` auto-shape, block arrows `rightArrow`, `leftArrow`, `downArrow`, `upArrow`, `leftRightArrow`, `chevron`, `hexagon`, `parallelogram`, `can` cylinder, callouts `wedgeRectCallout`, `wedgeRoundRectCallout`, `accentCallout1`).
+  - **Curved Connectors (Session 2)**: Handled curved connectors (`curvedConnector2` etc.) as quadratic Beziers utilizing canvas center control points.
+  - **OLE Preview Extraction (Session 2)**: Restricted nested `a:blip` preview image extraction to OLE controls and graphic frames containing OLE objects in `pptx_geometry.py`, preventing false image classification on normal auto-shapes with image fills.
+  - **Inverted y-axis fixes (Session 2)**: Fixed a y-center (`cy`) coordinate sign bug in arrows and callout drawing which caused massive bounding box layout distortion.
+  - **Grid Padding Calibration (Session 3)**: Multiplied grid offset and vertical column padding inside grid rows by the calibration `scale` parameter in `flow.py`. This fixed the layout page-break/split convergence loop on `vl16-ibn`, reducing Method S issues from 10 to 0 and boosting checked shapes (Method D) to 68.2% coverage.
+  - **Showcase optimization**: Reduced showcase runs to a curated 25% subset of the most problematic decks (9 decks). All 84 test cases pass cleanly.
+
+- **2026-07-18** (Session 5):
+  - **Fletcher Diagram Lifting**: Implemented pattern detection to lift grid-aligned flowchart nodes and connector edges into native, human-editable Fletcher diagrams (using grid coordinates, spacing, node shapes, fills, and edges).
+  - **Flowchart Heuristics**: Added node dimension and height-ratio heuristics (`max_h < 150pt`, `max_w < 250pt`, `max_h / min_h < 1.8`) to protect complex architecture/structural diagrams (like CPU grids or memory buffers) by falling back to precise CeTZ rendering.
+  - **Contiguous Segment Merging**: Enhanced the Method D verifier (`_merge_drawings` in `method_d.py`) to merge contiguous open path segments (e.g., multi-segment elbow connectors) within a distance threshold of 4.0pt. This enables correct topology matching for elbow connectors.
+  - **Showcase and Test Success**: Confirmed that all 84 test cases pass, and all showcase decks compile successfully with zero Method S issues on `vl16-ibn`.

@@ -41,6 +41,7 @@ from typstpresenter.verify.pptx_geometry import (
 
 TOUYING_VERSION = "0.6.1"
 CETZ_VERSION = "0.5.2"
+FLETCHER_VERSION = "0.5.8"
 
 
 def shape_bbox(shape) -> BBox | None:
@@ -83,6 +84,7 @@ def emit_touying(
     faults: tuple[Fault, ...] = (),
     default_font_size: float = 18.0,
     minimal: bool = False,
+    canvas_markers: bool = False,
 ) -> Path:
     """
     Emit a Touying presentation from a PPTX file.
@@ -96,7 +98,7 @@ def emit_touying(
     pptx_path = Path(pptx_path)
     out_path = Path(out_path)
     if minimal:
-        return emit_minimal(pptx_path, out_path, default_font_size)
+        return emit_minimal(pptx_path, out_path, default_font_size, canvas_markers=canvas_markers)
     prs = pptx.Presentation(str(pptx_path))
     page_w = prs.slide_width / EMU_PER_PT
     page_h = prs.slide_height / EMU_PER_PT
@@ -273,6 +275,7 @@ def emit_minimal(
     out_path: Path | str,
     default_font_size: float = 18.0,
     calibrate: bool = True,
+    canvas_markers: bool = False,
 ) -> Path:
     """
     Emit a human-editable Touying presentation (flow mode, no probes).
@@ -320,6 +323,7 @@ def emit_minimal(
                 default_font_size, doc_size,
                 scale=scales.get(slide_index, 1.0),
                 calibration_marker=markers,
+                canvas_markers=canvas_markers,
                 heading_size=title_size,
                 trailing_marker=(sentinel if markers
                                  and slide_index == slide_count - 1 else ""),
@@ -332,6 +336,8 @@ def emit_minimal(
         ]
         if "cetz." in body_text:
             header.append(f'#import "@preview/cetz:{CETZ_VERSION}"')
+        if "fletcher." in body_text:
+            header.append(f'#import "@preview/fletcher:{FLETCHER_VERSION}" as fletcher: diagram, node, edge')
         if any(f"#{fn}[" in body_text for fn in COLOR_PALETTE.values()):
             styles_path = out_path.parent / "styles.typ"
             styles_path.write_text(_styles_typ(COLOR_PALETTE), encoding="utf-8",

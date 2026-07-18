@@ -28,16 +28,21 @@ def is_diagram_shape(shape) -> bool:
     ) or shape.element.tag.endswith("}cxnSp")
 
 
-def _freeform_points(shape) -> list[tuple[float, float]] | None:
-    """Absolute-pt polygon vertices of a straight-edged freeform shape.
-
-    Only the common case -- a single closed path built from moveTo/lnTo
-    (no curves) -- is extracted exactly; anything with cubicBezTo,
-    quadBezTo or arcTo segments, or more than one subpath, falls back to
-    None so the caller draws the shape's plain bounding box instead.
-    """
+def _preset_name(shape) -> str | None:
     from pptx.oxml.ns import qn
+    try:
+        spPr = shape.element.spPr
+        if spPr is not None:
+            prst_geom = spPr.find(qn("a:prstGeom"))
+            if prst_geom is not None:
+                return prst_geom.get("prst")
+    except Exception:
+        pass
+    return None
 
+
+def _freeform_path_markup(shape, style: str) -> str | None:
+    from pptx.oxml.ns import qn
     from typstpresenter.verify.geometry import EMU_PER_PT
 
     custgeom = shape.element.spPr.find(qn("a:custGeom"))
@@ -55,26 +60,70 @@ def _freeform_points(shape) -> list[tuple[float, float]] | None:
     if not path_w or not path_h:
         return None
 
-    points: list[tuple[float, float]] = []
+    sx = shape.width / path_w
+    sy = shape.height / path_h
+
+    def to_pt(pt_el):
+        lx = int(pt_el.get("x"))
+        ly = int(pt_el.get("y"))
+        return (shape.left + lx * sx) / EMU_PER_PT, (shape.top + ly * sy) / EMU_PER_PT
+
+    draw_commands = []
+    curr_pt = None
+    start_pt = None
+    has_close = False
+
     for child in path:
         tag = child.tag.split("}")[-1]
         if tag == "close":
-            continue
-        if tag not in ("moveTo", "lnTo"):
-            return None  # curve segment -- not a straight polygon
-        pt = child.find(qn("a:pt"))
-        if pt is None:
-            return None
-        points.append((int(pt.get("x")), int(pt.get("y"))))
-    if len(points) < 3:
+            has_close = True
+        elif tag == "moveTo":
+            pt = child.find(qn("a:pt"))
+            if pt is not None:
+                curr_pt = to_pt(pt)
+                if start_pt is None:
+                    start_pt = curr_pt
+        elif tag == "lnTo":
+            pt = child.find(qn("a:pt"))
+            if pt is not None:
+                next_pt = to_pt(pt)
+                if curr_pt:
+                    draw_commands.append(
+                        f"line(({curr_pt[0]:.2f}, {-curr_pt[1]:.2f}), "
+                        f"({next_pt[0]:.2f}, {-next_pt[1]:.2f}))"
+                    )
+                curr_pt = next_pt
+        elif tag == "cubicBezTo":
+            pts = child.findall(qn("a:pt"))
+            if len(pts) == 3 and curr_pt:
+                ctrl1 = to_pt(pts[0])
+                ctrl2 = to_pt(pts[1])
+                end = to_pt(pts[2])
+                draw_commands.append(
+                    f"bezier(({curr_pt[0]:.2f}, {-curr_pt[1]:.2f}), "
+                    f"({end[0]:.2f}, {-end[1]:.2f}), "
+                    f"({ctrl1[0]:.2f}, {-ctrl1[1]:.2f}), "
+                    f"({ctrl2[0]:.2f}, {-ctrl2[1]:.2f}))"
+                )
+                curr_pt = end
+        elif tag == "quadBezTo":
+            pts = child.findall(qn("a:pt"))
+            if len(pts) == 2 and curr_pt:
+                ctrl = to_pt(pts[0])
+                end = to_pt(pts[1])
+                draw_commands.append(
+                    f"bezier(({curr_pt[0]:.2f}, {-curr_pt[1]:.2f}), "
+                    f"({end[0]:.2f}, {-end[1]:.2f}), "
+                    f"({ctrl[0]:.2f}, {-ctrl[1]:.2f}))"
+                )
+                curr_pt = end
+
+    if not draw_commands:
         return None
 
-    sx = shape.width / path_w
-    sy = shape.height / path_h
-    return [
-        ((shape.left + lx * sx) / EMU_PER_PT, (shape.top + ly * sy) / EMU_PER_PT)
-        for lx, ly in points
-    ]
+    close_arg = "close: true, " if has_close else ""
+    body = "; ".join(draw_commands)
+    return f"    merge-path({{{body}}}, {close_arg}{style})"
 
 
 def _shape_flips(shape) -> tuple[bool, bool]:
@@ -204,49 +253,56 @@ def emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
         stroke_rgb = shape_line_rgb(shape) or "000000"
         width = shape_line_width_pt(shape)
         stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
-        if _connector_is_elbow(shape):
+        prst = _preset_name(shape)
+        if prst and prst.startswith("curvedConnector"):
+            lines.append(f"    bezier(({bx:.2f}, {by:.2f}), ({ex:.2f}, {ey:.2f}), ({cx:.2f}, {-cy:.2f}), mark: (end: \">\"), {stroke})")
+        elif _connector_is_elbow(shape):
             mx = (bx + ex) / 2
             points = (f"({bx:.2f}, {by:.2f}), ({mx:.2f}, {by:.2f}), "
                       f"({mx:.2f}, {ey:.2f}), ({ex:.2f}, {ey:.2f})")
+            lines.append(f"    line({points}, mark: (end: \">\"), {stroke})")
         else:
             points = f"({bx:.2f}, {by:.2f}), ({ex:.2f}, {ey:.2f})"
-        lines.append(f"    line({points}, mark: (end: \">\"), {stroke})")
+            lines.append(f"    line({points}, mark: (end: \">\"), {stroke})")
         if probes:
             lines.append(f'    content(({cx:.2f}, {-cy:.2f}), [#tp-node-probe("{eid}")])')
         return "\n".join(lines), None
 
+    prst = _preset_name(shape)
     auto = None
     try:
         auto = shape.auto_shape_type
     except (ValueError, AttributeError):
         pass
     style = _cetz_style_args(shape)
-    if auto == MSO_SHAPE.OVAL:
+    if prst == "ellipse" or auto == MSO_SHAPE.OVAL:
         lines.append(
             f"    circle(({cx:.2f}, {-cy:.2f}), "
             f"radius: ({bbox.w / 2:.2f}, {bbox.h / 2:.2f}), {style})"
         )
-    elif auto == MSO_SHAPE.DIAMOND:
+    elif prst == "diamond" or auto == MSO_SHAPE.DIAMOND:
         lines.append(
             f"    line(({cx:.2f}, {y1:.2f}), ({x2:.2f}, {-cy:.2f}), "
             f"({cx:.2f}, {y2:.2f}), ({x1:.2f}, {-cy:.2f}), close: true, {style})"
         )
-    elif auto == MSO_SHAPE.ISOSCELES_TRIANGLE:
+    elif prst == "triangle" or auto == MSO_SHAPE.ISOSCELES_TRIANGLE:
         lines.append(
             f"    line(({cx:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
             f"({x1:.2f}, {y2:.2f}), close: true, {style})"
         )
-    elif auto in (MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.RIGHT_BRACE,
-                  MSO_SHAPE.LEFT_BRACKET, MSO_SHAPE.RIGHT_BRACKET):
+    elif prst in ("leftBrace", "rightBrace", "leftBracket", "rightBracket") or auto in (
+        MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.RIGHT_BRACE,
+        MSO_SHAPE.LEFT_BRACKET, MSO_SHAPE.RIGHT_BRACKET
+    ):
         # braces/brackets are open strokes -- a theme-filled rect here
         # would paint a solid bar over whatever the brace annotates
         stroke_rgb = (shape_line_rgb(shape) or shape_fill_rgb(shape)
                       or "000000")
         width = shape_line_width_pt(shape)
         stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
-        left = auto in (MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.LEFT_BRACKET)
+        left = prst in ("leftBrace", "leftBracket") or auto in (MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.LEFT_BRACKET)
         xo, xt = (x2, x1) if left else (x1, x2)  # open side, tip side
-        if auto in (MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.RIGHT_BRACE):
+        if prst in ("leftBrace", "rightBrace") or auto in (MSO_SHAPE.LEFT_BRACE, MSO_SHAPE.RIGHT_BRACE):
             xs = (x1 + x2) / 2  # spine in the middle, tip pokes out at cy
             pts = (f"({xo:.2f}, {y1:.2f}), ({xs:.2f}, {y1:.2f}), "
                    f"({xs:.2f}, {-cy:.2f}), ({xt:.2f}, {-cy:.2f}), "
@@ -256,13 +312,100 @@ def emit_cetz_shape(shape, eid: str, bbox: BBox, probes: bool,
             pts = (f"({xo:.2f}, {y1:.2f}), ({xt:.2f}, {y1:.2f}), "
                    f"({xt:.2f}, {y2:.2f}), ({xo:.2f}, {y2:.2f})")
         lines.append(f"    line({pts}, {stroke})")
-    elif auto is None and shape.shape_type == MSO_SHAPE_TYPE.FREEFORM and (
-        freeform_pts := _freeform_points(shape)
-    ):
-        pts = ", ".join(f"({x:.2f}, {-y:.2f})" for x, y in freeform_pts)
+    elif prst == "line":
+        flip_h, flip_v = _shape_flips(shape)
+        bx, ex = (x2, x1) if flip_h else (x1, x2)
+        by, ey = (y2, y1) if flip_v else (y1, y2)
+        stroke_rgb = shape_line_rgb(shape) or "000000"
+        width = shape_line_width_pt(shape)
+        stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
+        lines.append(f"    line(({bx:.2f}, {by:.2f}), ({ex:.2f}, {ey:.2f}), {stroke})")
+    elif prst == "rightArrow" or auto == MSO_SHAPE.RIGHT_ARROW:
+        hx = x2 - min(0.4 * bbox.w, bbox.h * 0.8)
+        lines.append(
+            f"    line(({x1:.2f}, {-cy + bbox.h/4:.2f}), ({hx:.2f}, {-cy + bbox.h/4:.2f}), "
+            f"({hx:.2f}, {y1:.2f}), ({x2:.2f}, {-cy:.2f}), ({hx:.2f}, {y2:.2f}), "
+            f"({hx:.2f}, {-cy - bbox.h/4:.2f}), ({x1:.2f}, {-cy - bbox.h/4:.2f}), close: true, {style})"
+        )
+    elif prst == "leftArrow" or auto == MSO_SHAPE.LEFT_ARROW:
+        hx = x1 + min(0.4 * bbox.w, bbox.h * 0.8)
+        lines.append(
+            f"    line(({x2:.2f}, {-cy + bbox.h/4:.2f}), ({hx:.2f}, {-cy + bbox.h/4:.2f}), "
+            f"({hx:.2f}, {y1:.2f}), ({x1:.2f}, {-cy:.2f}), ({hx:.2f}, {y2:.2f}), "
+            f"({hx:.2f}, {-cy - bbox.h/4:.2f}), ({x2:.2f}, {-cy - bbox.h/4:.2f}), close: true, {style})"
+        )
+    elif prst == "downArrow" or auto == MSO_SHAPE.DOWN_ARROW:
+        hy = y2 + min(0.4 * bbox.h, bbox.w * 0.8)
+        lines.append(
+            f"    line(({cx - bbox.w/4:.2f}, {y1:.2f}), ({cx - bbox.w/4:.2f}, {hy:.2f}), "
+            f"({x1:.2f}, {hy:.2f}), ({cx:.2f}, {y2:.2f}), ({x2:.2f}, {hy:.2f}), "
+            f"({cx + bbox.w/4:.2f}, {hy:.2f}), ({cx + bbox.w/4:.2f}, {y1:.2f}), close: true, {style})"
+        )
+    elif prst == "upArrow" or auto == MSO_SHAPE.UP_ARROW:
+        hy = y1 - min(0.4 * bbox.h, bbox.w * 0.8)
+        lines.append(
+            f"    line(({cx - bbox.w/4:.2f}, {y2:.2f}), ({cx - bbox.w/4:.2f}, {hy:.2f}), "
+            f"({x1:.2f}, {hy:.2f}), ({cx:.2f}, {y1:.2f}), ({x2:.2f}, {hy:.2f}), "
+            f"({cx + bbox.w/4:.2f}, {hy:.2f}), ({cx + bbox.w/4:.2f}, {y2:.2f}), close: true, {style})"
+        )
+    elif prst == "leftRightArrow" or auto == MSO_SHAPE.LEFT_RIGHT_ARROW:
+        hx1 = x1 + min(0.25 * bbox.w, bbox.h * 0.5)
+        hx2 = x2 - min(0.25 * bbox.w, bbox.h * 0.5)
+        lines.append(
+            f"    line(({hx1:.2f}, {-cy + bbox.h/4:.2f}), ({hx2:.2f}, {-cy + bbox.h/4:.2f}), "
+            f"({hx2:.2f}, {y1:.2f}), ({x2:.2f}, {-cy:.2f}), ({hx2:.2f}, {y2:.2f}), "
+            f"({hx2:.2f}, {-cy - bbox.h/4:.2f}), ({hx1:.2f}, {-cy - bbox.h/4:.2f}), "
+            f"({hx1:.2f}, {y2:.2f}), ({x1:.2f}, {-cy:.2f}), ({hx1:.2f}, {y1:.2f}), close: true, {style})"
+        )
+    elif prst == "parallelogram" or auto == MSO_SHAPE.PARALLELOGRAM:
+        shift = 0.25 * bbox.w
+        lines.append(
+            f"    line(({x1 + shift:.2f}, {y1:.2f}), ({x2:.2f}, {y1:.2f}), "
+            f"({x2 - shift:.2f}, {y2:.2f}), ({x1:.2f}, {y2:.2f}), close: true, {style})"
+        )
+    elif prst == "chevron" or auto == MSO_SHAPE.CHEVRON:
+        lines.append(
+            f"    line(({x1:.2f}, {y1:.2f}), ({x2 - 0.25 * bbox.w:.2f}, {y1:.2f}), "
+            f"({x2:.2f}, {-cy:.2f}), ({x2 - 0.25 * bbox.w:.2f}, {y2:.2f}), "
+            f"({x1:.2f}, {y2:.2f}), ({x1 + 0.25 * bbox.w:.2f}, {-cy:.2f}), close: true, {style})"
+        )
+    elif prst == "hexagon" or auto == MSO_SHAPE.HEXAGON:
+        lines.append(
+            f"    line(({x1 + 0.25 * bbox.w:.2f}, {y1:.2f}), ({x2 - 0.25 * bbox.w:.2f}, {y1:.2f}), "
+            f"({x2:.2f}, {-cy:.2f}), ({x2 - 0.25 * bbox.w:.2f}, {y2:.2f}), "
+            f"({x1 + 0.25 * bbox.w:.2f}, {y2:.2f}), ({x1:.2f}, {-cy:.2f}), close: true, {style})"
+        )
+    elif prst == "can" or auto == MSO_SHAPE.CAN:
+        eh = min(bbox.h / 6.0, bbox.w / 4.0)
+        lines.append(f"    circle(({cx:.2f}, {y2 + eh:.2f}), radius: ({bbox.w / 2:.2f}, {eh:.2f}), {style})")
+        fill_val = shape_fill_rgb(shape)
+        body_fill = f'fill: rgb("#{fill_val}")' if fill_val else "fill: none"
+        lines.append(f"    rect(({x1:.2f}, {y2 + eh:.2f}), ({x2:.2f}, {y1 - eh:.2f}), stroke: none, {body_fill})")
+        stroke_rgb = shape_line_rgb(shape) or "000000"
+        width = shape_line_width_pt(shape)
+        stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
+        lines.append(f"    line(({x1:.2f}, {y2 + eh:.2f}), ({x1:.2f}, {y1 - eh:.2f}), {stroke})")
+        lines.append(f"    line(({x2:.2f}, {y2 + eh:.2f}), ({x2:.2f}, {y1 - eh:.2f}), {stroke})")
+        lines.append(f"    circle(({cx:.2f}, {y1 - eh:.2f}), radius: ({bbox.w / 2:.2f}, {eh:.2f}), {style})")
+    elif prst in ("wedgeRectCallout", "wedgeRoundRectCallout"):
+        pts = (f"({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
+               f"({x1 + 0.4 * bbox.w:.2f}, {y2:.2f}), ({x1 + 0.2 * bbox.w:.2f}, {y2 - 15.0:.2f}), "
+               f"({x1 + 0.2 * bbox.w:.2f}, {y2:.2f}), ({x1:.2f}, {y2:.2f})")
         lines.append(f"    line({pts}, close: true, {style})")
+    elif prst == "accentCallout1":
+        lines.append(f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), {style})")
+        stroke_rgb = shape_line_rgb(shape) or "000000"
+        width = shape_line_width_pt(shape)
+        stroke = f'stroke: (paint: rgb("#{stroke_rgb}"), thickness: {width:g}pt)'
+        lines.append(f"    line(({x1:.2f}, {-cy:.2f}), ({x1 - 15.0:.2f}, {-cy - 10.0:.2f}), {stroke})")
+    elif shape.shape_type == MSO_SHAPE_TYPE.FREEFORM:
+        path_markup = _freeform_path_markup(shape, style)
+        if path_markup:
+            lines.append(path_markup)
+        else:
+            lines.append(f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), {style})")
     else:
-        radius = 4.0 if auto == MSO_SHAPE.ROUNDED_RECTANGLE else 0.0
+        radius = 4.0 if (prst == "roundRect" or auto == MSO_SHAPE.ROUNDED_RECTANGLE) else 0.0
         lines.append(
             f"    rect(({x1:.2f}, {y1:.2f}), ({x2:.2f}, {y2:.2f}), "
             f"radius: {radius:g}, {style})"

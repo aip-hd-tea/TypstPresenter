@@ -79,6 +79,8 @@ class DiagramReport:
     warnings: list[str] = field(default_factory=list)
     checked_slides: int = 0
     skipped_slides: int = 0
+    checked_shapes: int = 0
+    total_shapes: int = 0
 
     @property
     def ok(self) -> bool:
@@ -86,9 +88,11 @@ class DiagramReport:
 
     def summary(self) -> str:
         status = "OK" if self.ok else f"{len(self.issues)} issues"
+        cov = (self.checked_shapes / self.total_shapes * 100) if self.total_shapes > 0 else 0.0
         lines = [f"{status} ({len(self.warnings)} warnings) -- "
                 f"{self.checked_slides} slide(s) checked, "
-                f"{self.skipped_slides} skipped (too complex / no diagram)"]
+                f"{self.skipped_slides} skipped (too complex / no diagram), "
+                f"coverage {cov:.1f}% ({self.checked_shapes}/{self.total_shapes} shapes)"]
         lines += [f"  issue: {i}" for i in self.issues]
         lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
@@ -276,7 +280,44 @@ def _merge_drawings(drawings: list[dict]) -> list[_RenderedItem]:
             bbox=bbox, kind=kind, axis_aligned=axis_aligned,
             fill_rgb=fill_rgb, stroke_rgb=stroke_rgb, n_points=len(all_points),
         ))
-    return items
+    # Merge touching open_path connectors
+    connectors = [it for it in items if it.kind == "open_path"]
+    other_items = [it for it in items if it.kind != "open_path"]
+    changed = True
+    while changed:
+        changed = False
+        i = 0
+        while i < len(connectors):
+            j = i + 1
+            while j < len(connectors):
+                c1 = connectors[i]
+                c2 = connectors[j]
+                dx = max(0, max(c1.bbox.x, c2.bbox.x) - min(c1.bbox.x2, c2.bbox.x2))
+                dy = max(0, max(c1.bbox.y, c2.bbox.y) - min(c1.bbox.y2, c2.bbox.y2))
+                if dx < 4.0 and dy < 4.0:
+                    union_box = BBox(
+                        min(c1.bbox.x, c2.bbox.x),
+                        min(c1.bbox.y, c2.bbox.y),
+                        max(c1.bbox.x2, c2.bbox.x2) - min(c1.bbox.x, c2.bbox.x),
+                        max(c1.bbox.y2, c2.bbox.y2) - min(c1.bbox.y, c2.bbox.y)
+                    )
+                    merged = _RenderedItem(
+                        bbox=union_box,
+                        kind="open_path",
+                        axis_aligned=c1.axis_aligned and c2.axis_aligned,
+                        fill_rgb=c1.fill_rgb or c2.fill_rgb,
+                        stroke_rgb=c1.stroke_rgb or c2.stroke_rgb,
+                        n_points=c1.n_points + c2.n_points
+                    )
+                    connectors[i] = merged
+                    connectors.pop(j)
+                    changed = True
+                    break
+                j += 1
+            if changed:
+                break
+            i += 1
+    return other_items + connectors
 
 
 def rendered_diagram_items(page: fitz.Page) -> tuple[list[_RenderedItem], list[_RenderedItem]]:
@@ -354,6 +395,7 @@ def _check_slide(shapes: list[_SourceShape], page: fitz.Page,
         return
 
     report.checked_slides += 1
+    report.checked_shapes += len(src_shapes)
     src_cluster = _cluster_bounds([s.effective_bbox for s in src_shapes])
     rendered_cluster = _cluster_bounds([r.bbox for r in rendered_shapes])
 
@@ -375,8 +417,7 @@ def _check_slide(shapes: list[_SourceShape], page: fitz.Page,
             return dx * dx + dy * dy + dw * dw + dh * dh
 
         if not remaining:
-            sink.append(f"slide {slide_no}: shape {s.eid} ({s.kind}) "
-                       "missing from the rendered diagram")
+            sink.append(f"slide {slide_no}: shape {s.eid} ({s.kind}) - missing from the rendered diagram")
             continue
         best = min(remaining, key=cost)
         remaining.remove(best)
@@ -385,25 +426,22 @@ def _check_slide(shapes: list[_SourceShape], page: fitz.Page,
         dsize = math.hypot(r_norm[2] - s_norm[2], r_norm[3] - s_norm[3])
         if dpos > _POS_TOLERANCE:
             sink.append(
-                f"slide {slide_no}: shape {s.eid} ({s.kind}) rendered at the "
-                f"wrong relative position (drift {dpos:.2f} of cluster size)")
+                f"slide {slide_no}: shape {s.eid} ({s.kind}) - displaced (drift {dpos:.2f} of cluster size)")
         if dsize > _SIZE_TOLERANCE:
             sink.append(
-                f"slide {slide_no}: shape {s.eid} ({s.kind}) rendered at the "
-                f"wrong relative size (drift {dsize:.2f} of cluster size)")
+                f"slide {slide_no}: shape {s.eid} ({s.kind}) - wrong-size (drift {dsize:.2f} of cluster size)")
         if not _expected_kind_ok(s.kind, best):
             sink.append(
-                f"slide {slide_no}: shape {s.eid} expected {s.kind}, "
-                f"rendered path looks like {best.kind}"
-                f"{' (axis-aligned)' if best.axis_aligned else ''}")
+                f"slide {slide_no}: shape {s.eid} ({s.kind}) - wrong-kind (expected {s.kind}, "
+                f"rendered path looks like {best.kind}{' (axis-aligned)' if best.axis_aligned else ''})")
         if not _color_close(s.fill_rgb, best.fill_rgb):
             sink.append(
-                f"slide {slide_no}: shape {s.eid} fill mismatch: "
-                f"source #{s.fill_rgb}, rendered {best.fill_rgb}")
+                f"slide {slide_no}: shape {s.eid} ({s.kind}) - wrong-style (fill mismatch: "
+                f"source #{s.fill_rgb}, rendered {best.fill_rgb})")
         if not _color_close(s.stroke_rgb, best.stroke_rgb):
             report.warnings.append(
-                f"slide {slide_no}: shape {s.eid} stroke mismatch: "
-                f"source #{s.stroke_rgb}, rendered {best.stroke_rgb}")
+                f"slide {slide_no}: shape {s.eid} ({s.kind}) - wrong-style (stroke mismatch: "
+                f"source #{s.stroke_rgb}, rendered {best.stroke_rgb})")
 
     for extra in remaining:
         report.warnings.append(
@@ -412,6 +450,104 @@ def _check_slide(shapes: list[_SourceShape], page: fitz.Page,
 
     _check_connectors(src_conns, src_shapes, rendered_conns, src_cluster,
                       rendered_cluster, sink, slide_no)
+
+
+def _check_slide_clusters(shapes: list[_SourceShape], page: fitz.Page,
+                          report: DiagramReport, slide_no: int,
+                          markers: list[dict]) -> None:
+    all_rendered_shapes, all_rendered_conns = rendered_diagram_items(page)
+    checked_any = False
+
+    for marker in markers:
+        cluster_id = marker["id"]
+        c_shapes_set = set(marker.get("shapes", []))
+
+        src_shapes = [s for s in shapes if s.eid in c_shapes_set and s.kind != "connector"]
+        src_conns = [s for s in shapes if s.eid in c_shapes_set and s.kind == "connector"]
+
+        if not src_shapes:
+            continue
+
+        canvas_bbox = BBox(marker["x"], marker["y"], marker["w"], marker["h"])
+
+        def is_inside(r_bbox: BBox) -> bool:
+            cx, cy = r_bbox.center
+            return (canvas_bbox.x - 5.0 <= cx <= canvas_bbox.x2 + 5.0 and
+                    canvas_bbox.y - 5.0 <= cy <= canvas_bbox.y2 + 5.0)
+
+        rendered_shapes = [r for r in all_rendered_shapes if is_inside(r.bbox)]
+        rendered_conns = [r for r in all_rendered_conns if is_inside(r.bbox)]
+
+        if len(rendered_shapes) < len(src_shapes) * _MIN_MATCH_FRACTION:
+            report.skipped_slides += 1
+            report.warnings.append(
+                f"slide {slide_no} (cluster {cluster_id}): abstained (found {len(rendered_shapes)} "
+                f"rendered shape-like paths for {len(src_shapes)} source shapes)")
+            continue
+        if len(rendered_shapes) > len(src_shapes) * (1 / _MIN_MATCH_FRACTION) + 3:
+            report.skipped_slides += 1
+            report.warnings.append(
+                f"slide {slide_no} (cluster {cluster_id}): abstained (found {len(rendered_shapes)} "
+                f"rendered shape-like paths, only {len(src_shapes)} source shapes)")
+            continue
+
+        checked_any = True
+        report.checked_shapes += len(src_shapes)
+        src_cluster = _cluster_bounds([s.effective_bbox for s in src_shapes])
+        rendered_cluster = _cluster_bounds([r.bbox for r in rendered_shapes])
+
+        confident = len(src_shapes) <= _CONFIDENT_SHAPE_COUNT
+        sink = report.issues if confident else report.warnings
+
+        remaining = list(rendered_shapes)
+        for s in sorted(src_shapes, key=lambda s: -s.effective_bbox.w * s.effective_bbox.h):
+            s_norm = _normalize(s.effective_bbox, src_cluster)
+
+            def cost(r: _RenderedItem) -> float:
+                r_norm = _normalize(r.bbox, rendered_cluster)
+                dx = r_norm[0] - s_norm[0]
+                dy = r_norm[1] - s_norm[1]
+                dw = r_norm[2] - s_norm[2]
+                dh = r_norm[3] - s_norm[3]
+                return dx * dx + dy * dy + dw * dw + dh * dh
+
+            if not remaining:
+                sink.append(f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - missing from the rendered diagram")
+                continue
+            best = min(remaining, key=cost)
+            remaining.remove(best)
+            r_norm = _normalize(best.bbox, rendered_cluster)
+            dpos = math.hypot(r_norm[0] - s_norm[0], r_norm[1] - s_norm[1])
+            dsize = math.hypot(r_norm[2] - s_norm[2], r_norm[3] - s_norm[3])
+            if dpos > _POS_TOLERANCE:
+                sink.append(
+                    f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - displaced (drift {dpos:.2f} of cluster size)")
+            if dsize > _SIZE_TOLERANCE:
+                sink.append(
+                    f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - wrong-size (drift {dsize:.2f} of cluster size)")
+            if not _expected_kind_ok(s.kind, best):
+                sink.append(
+                    f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - wrong-kind (expected {s.kind}, "
+                    f"rendered path looks like {best.kind}{' (axis-aligned)' if best.axis_aligned else ''})")
+            if not _color_close(s.fill_rgb, best.fill_rgb):
+                sink.append(
+                    f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - wrong-style (fill mismatch: "
+                    f"source #{s.fill_rgb}, rendered {best.fill_rgb})")
+            if not _color_close(s.stroke_rgb, best.stroke_rgb):
+                report.warnings.append(
+                    f"slide {slide_no} (cluster {cluster_id}): shape {s.eid} ({s.kind}) - wrong-style (stroke mismatch: "
+                    f"source #{s.stroke_rgb}, rendered {best.stroke_rgb})")
+
+        for extra in remaining:
+            report.warnings.append(
+                f"slide {slide_no} (cluster {cluster_id}): unmatched rendered shape near "
+                f"({extra.bbox.x:.0f},{extra.bbox.y:.0f}) -- no corresponding source shape")
+
+        _check_connectors(src_conns, shapes, rendered_conns, src_cluster,
+                          rendered_cluster, sink, slide_no)
+
+    if checked_any:
+        report.checked_slides += 1
 
 
 def _nearest_shape_id(point: tuple[float, float], shapes: list[_SourceShape]) -> str:
@@ -497,9 +633,40 @@ def verify_diagrams(pptx_path: Path | str, pdf_path: Path | str) -> DiagramRepor
             f"page count {len(doc)} != slide count {len(prs.slides)}; "
             "skipping (pages don't align 1:1 with slides)")
         return report
+
+    # Query canvas markers
+    canvas_markers_by_page: dict[int, list[dict]] = {}
+    typ_path = Path(pdf_path).with_suffix(".typ")
+    if typ_path.exists():
+        from typstpresenter.convert.emitter import emit_minimal
+        from typstpresenter.verify.typst_tools import query
+        
+        temp_typ_path = typ_path.with_name(f"{typ_path.stem}_verify_d.typ")
+        try:
+            emit_minimal(pptx_path, temp_typ_path, canvas_markers=True)
+            res = query(temp_typ_path, "<tp-canvas>")
+            for item in res.value:
+                page_idx = item["page"] - 1 # 0-based
+                canvas_markers_by_page.setdefault(page_idx, []).append(item)
+        except Exception as e:
+            report.warnings.append(f"Could not query canvas markers: {e}")
+        finally:
+            if temp_typ_path.exists():
+                try:
+                    temp_typ_path.unlink()
+                except Exception:
+                    pass
+
     for slide_index, slide in enumerate(prs.slides):
         shapes = source_diagram_shapes(slide, slide_index)
         if not shapes:
             continue
-        _check_slide(shapes, doc[slide_index], report, slide_index + 1)
+        src_shapes_all = [s for s in shapes if s.kind != "connector"]
+        report.total_shapes += len(src_shapes_all)
+
+        markers = canvas_markers_by_page.get(slide_index, [])
+        if markers:
+            _check_slide_clusters(shapes, doc[slide_index], report, slide_index + 1, markers)
+        else:
+            _check_slide(shapes, doc[slide_index], report, slide_index + 1)
     return report
